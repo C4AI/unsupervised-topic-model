@@ -1,0 +1,14 @@
+__pycache__/
+.embedding_cache/
+.ipynb_checkpoints/
+.vscode/
+archive/
+synthetic/
+pre-trained
+
+algorithms.py
+commons.py
+generateSyntheticData_mod.py
+nohup.out
+*.csv*
+pira.ipynb
