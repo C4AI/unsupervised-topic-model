@@ -24,7 +24,7 @@ import pyqtgraph as pg
 
 wbkm = __import__("wbkm numpy debugging land")
 from nbvd import NBVD_coclustering
-from synthetic_suite import print_silhouette_score, pyqtgraph_thing
+from my_utils import MeanTuple, cool_header_thing, plot_matrices, start_default_rng, print_silhouette_score, bic_boolean_to_labels, pyqtgraph_thing
 
 np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
@@ -32,14 +32,14 @@ N_ROW_CLUSTERS, N_COL_CLUSTERS = 4,4
 RNG_SEED=42
 VECTORIZATION='w2v'
 W2V_DIM=100
-ALG='kmeans'
+ALG='wbkm'
 ATTEMPTS_MAX=10
-rerun_embedding=False
+rerun_embedding=True
 MOVIE=False
 
 ############################################################################## 
 # to use a set number of cpus: 
-#   taskset --cpu-list 0-7 python "nbvd pira.py"
+#   taskset --cpu-list 0-7 python "pira.py"
 ##############################################################################
 
 def w2v_combine_sentences (tokenized_sentences, model, method='tfidf', isDoc2Vec=False):

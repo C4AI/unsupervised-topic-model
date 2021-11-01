@@ -34,11 +34,11 @@ MAT_SIZE = 600 # matrix size (square)
 ALG = 'nbvd' # (Task != 3) clustering algorithm
 ATTEMPTS_MAX = 10 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
-TASK = 3 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
+TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
 MOVIE = False # (NBVD) display movie showing clustering iterations
-SYNTHETIC_DATASET = 22 # (Task 2) chosen dataset
+SYNTHETIC_DATASET = 13 # (Task 2) chosen dataset
 WAIT_TIME = 4 # (Task 3) wait time between tasks
 SHOW_IMAGES = False # (Task 3) display matrices
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
@@ -47,6 +47,10 @@ LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and res
 
 np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
+############################################################################## 
+# to use a set number of cpus: 
+#   taskset --cpu-list 0-7 python "synthetic_suite.py"
+##############################################################################
 
 def logger_setup(log_folder : str, level=logging.DEBUG):
     logger = logging.getLogger(__name__)
@@ -107,7 +111,10 @@ def load_dataset (data_dir, filename):
 
 def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=ATTEMPTS_MAX, 
         show_images=True, first_image_save_path=None, logger=logging.getLogger(__name__)):
-    logger.info(f"shape: {data.shape}")
+    if logger:
+        logger.info(f"shape: {data.shape}")
+    else:
+        print(f"shape: {data.shape}")
     timer = None if only_one else WAIT_TIME * show_images 
 
     if not only_one:
@@ -176,14 +183,17 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         logger.info(f"columns:\n  ARI= {ari:.3f}\n  AMI= {ami:.3f}\n  VMs= {vmeasure:.3f}\n")
 
     # internal indices
-    silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_)
+    silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
     # matplotlib
     if alg == 'nbvd':
         to_plot = [data, model.R@model.B@model.C, model.B]
         names = ["Original dataset", "Block value matrix RBC", "Block value matrix B"]
-        if show_images:
-            plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
+    elif alg == 'wbkm':
+        to_plot = [data, model.P@model.S@model.Q.T, model.D1@model.P@model.S@model.Q.T@model.D2]
+        names = ["Original dataset", "Reconstructed matrix? (dont think so)", "Reconstructed matrix...?"]
+    if show_images:
+        plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
 
     if SHUFFLE_TEST:
         # rearranged data
@@ -297,7 +307,8 @@ def main():
     if TASK == 0:
         do_task_single(data, true_labels=(rows, columns))
     elif TASK == 1 or TASK == 2:
-        do_task_single(data)
+        alg='wbkm'
+        do_task_single(data,alg=alg, n_attempts=ATTEMPTS_MAX, logger=None)
     elif TASK == 3:
         n_attempts = ATTEMPTS_MAX
         alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans'] 

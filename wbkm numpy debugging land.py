@@ -4,6 +4,7 @@ import numpy as np
 from numpy.linalg import inv, norm
 from numpy.random import default_rng
 from matplotlib import pyplot as plt
+from scipy.linalg import fractional_matrix_power as fmp
 
 from sklearn.datasets import make_biclusters
 from sklearn.cluster import SpectralCoclustering
@@ -17,8 +18,9 @@ RNG_SEED=996535595 #297395776
 NO_CLUSTERS = 5 # 4
 MAT_SIZE = 500 # 500
 ATTEMPTS_MAX = 10 # it'll work eventually!
+ITER_MAX = 5 # 5 seems ok..? (at least for synthetic data)
 
-
+#TODO: test '# or maybe just keep going but dont recalculate S, although i dont think that makes a difference'
 #TODO: make it work with numba
 
 
@@ -80,10 +82,10 @@ def count_zero_columns (M : np.ndarray):
 
 @dataclass(eq=False) # generated eq method might not be ideal?
 class WBKM_coclustering:
-    ITER_MAX = 5
     # init arguments
     data: np.ndarray
     n_clusters: int
+    iter_max: int = ITER_MAX
     n_attempts: int = ATTEMPTS_MAX
     random_state: int = None
     verbose: bool = False
@@ -93,6 +95,11 @@ class WBKM_coclustering:
     biclusters_: np.ndarray = field(init=False)
     row_labels_: np.ndarray = field(init=False)
     column_labels_: np.ndarray = field(init=False)
+    P : np.ndarray = field(init=False)
+    Q : np.ndarray = field(init=False)
+    S : np.ndarray = field(init=False)
+    D1 : np.ndarray = field(init=False)
+    D2 : np.ndarray = field(init=False)
     best_max_iter_reached : int = field(init=False)
     best_no_zero_cols : int = field(init=False)
 
@@ -120,21 +127,12 @@ class WBKM_coclustering:
         ###_, j_idx = np.mgrid[slice(Q.shape[0]), slice(Q.shape[1])] # prefer anything over for loop
         self.print_or_log("    Getting new Q ...")
         first_term_mat = inv(D1) @ X @ inv(D2) # first term is actually the ith column
-
-        """
-        print(f"mins: {np.diag(inv(D1)).min()} {np.abs(X).min()} {np.diag(inv(D2)).min()} ")
-        print(f"first term mat min: {np.abs(first_term_mat).min()} ")
-        print("List of zeroes in first_term_mat:")
-        pprint(np.argwhere(first_term_mat == 0))
-        print("\n\n")
-        """
         
         # one column of DXD at a time
         newQ = np.zeros(Q.shape) # might be R.shape? idk
         for i in range(Q.shape[0]):
             a = first_term_mat.shape[0] # column size
             b = R.shape[1] # number of columns
-            #print("a,b:",a,b) (500,c)
 
             # this is the shape for the appropriate resize but we get the column repeated as matrix rows, 
             # so we need to transpose it
@@ -142,18 +140,6 @@ class WBKM_coclustering:
             #print("ith many times shape:", first_term_ith_column_many_times.shape) # (500,c)
             #NOTE: numba doe snot support np.resize :c
             
-            # they dont seem weird
-            mat1 = (first_term_ith_column_many_times - R)**2
-            mat2 = np.abs(first_term_ith_column_many_times - R)
-
-            argmin_thing = np.sum((first_term_ith_column_many_times - R)**2, axis=0)
-            #print("argmin thing shape:", argmin_thing.shape) # (c,)
-
-            # its never the 0th one for iteration 0 of seed 297395776
-            # NOTE: i guess it makes sense that R's 0th column (which is quite median) doesnt boost the values as much
-            # so its inevitable that newQ will be singular
-            #mat_debug(first_term_ith_column_many_times, "first ith t")
-            #mat_debug(R, "R")
 
             # we use arange() to get the values that k assumes in the formula
             # (pick between the c columns of R the one that gives the smallest thing)
@@ -162,8 +148,6 @@ class WBKM_coclustering:
         return newQ
 
     def getNewP(self, P, L, X, D1, D2):
-        ### iter over cols..?
-        ###_, j_idx = np.mgrid[slice(Q.shape[0]), slice(Q.shape[1])] # prefer anything over for loop
         self.print_or_log("    Getting new P ...")
 
         first_term_mat = inv(D1) @ X @ inv(D2) # first term is actually the jth row
@@ -175,20 +159,6 @@ class WBKM_coclustering:
             b = L.shape[0] # number of rows
             first_term_ith_row_many_times = np.resize(first_term_mat[j,:], (b,a)) # FIXME: use repeat instead?
             
-            """
-            # this cant be right; maybe work with P.T or with i = argmin(...) ?
-            cond = (np.argmin(np.sum((first_term_ith_row_many_times - L)**2, axis=1)) == np.arange(L.shape[0])) # bool array
-            newP[:, j] = np.where(cond, 1, 0) # FIXME: not absolutely sure about this but it must be so
-            """
-
-            """
-            # this doesnt make sense and would be out of the loop
-            j_chosen = np.argmin(np.sum((first_term_ith_row_many_times - L)**2, axis=1))
-            print("j, j_chosen", j, j_chosen)
-            newP[:, j_chosen] = 1
-            """
-
-            bla =np.sum((first_term_ith_row_many_times - L)**2, axis=1)
 
             # NOTE:assuming ith row od DXD instead of jth row
             # otherwise, we might have more than 1 chosen j in a single line (so its not an indicator matrix)
@@ -196,9 +166,8 @@ class WBKM_coclustering:
             # we use arange() to get the values that k assumes in the formula
             # (pick between the c rows of L the one that gives the smallest thing)
             cond = (np.argmin(np.sum((first_term_ith_row_many_times - L)**2, axis=1)) == np.arange(L.shape[0])) # bool array
-            newP[j, :] = np.where(cond, 1, 0) # FIXME: not absolutely sure about this but it doesnt seem too wrong
+            newP[j, :] = np.where(cond, 1, 0)
 
-        #mat_debug(newP, "newP")
         return newP
 
     def get_stuff (P, Q):
@@ -207,8 +176,16 @@ class WBKM_coclustering:
         col = np.argmax(Q, axis=1)
         return bic, row, col
     
-    # FIXME: return iteration step so we have some idea of how far it got and select best on loop
-    # another good criteria would be no. of zero columns
+    def objective (self, X, D1, D2, S, Q, P):
+        try:
+            obj = norm(
+                fmp(D1,-0.5)@X@fmp(D2,-0.5) - fmp(D1,0.5)@P@S@Q.T@fmp(D2,0.5)
+                )
+        except Exception as e:
+            self.print_or_log(str(e))
+            obj = np.nan
+        return obj
+    
     def attempt_coclustering (self, X, D1, D2, c, attempt_no=0):
         s = cool_header_thing()
         self.print_or_log(f"\n{s}\nAttempt #{attempt_no}:\n{s}\n")
@@ -222,7 +199,10 @@ class WBKM_coclustering:
         newQ, newP = None, None
         stop_everything, no_zero_cols = False, 0
         iteration = 0
-        while iteration < WBKM_coclustering.ITER_MAX: # FIXME: add convergence condition # frobenius on newP,P and newQ,Q?
+        S = inv(P.T @ D1 @ P @ Q.T @ D2 @ Q) @ f(P.T @ X @ Q)
+        obj = self.objective(X, D1, D2, S, Q, P)
+        self.print_or_log(f"\nobjective: {obj}")
+        while iteration < self.iter_max: # FIXME: add convergence condition # frobenius on newP,P and newQ,Q?
             if iteration != 0:
                 Q = newQ
                 P = newP
@@ -256,10 +236,13 @@ class WBKM_coclustering:
             # for this iteration, and so we mustn't recalculate it
             L = S @ newQ.T # FIXME: newQ or Q?
             newP = self.getNewP(P, L, X, D1, D2)
+            
+            obj = self.objective(X, D1, D2, S, newQ, newP)
+            self.print_or_log(f"objective: {obj}\n")
             iteration += 1 # increase iteration counter
         self.print_or_log(f"stuff: {stop_everything}, {iteration}, {no_zero_cols}")
         
-        return (newP, newQ, stop_everything, iteration, no_zero_cols)
+        return (newP, newQ, S, stop_everything, iteration, no_zero_cols)
 
     # run after auto-generated init
     def __post_init__(self):
@@ -291,31 +274,31 @@ class WBKM_coclustering:
         sum_over_rows = np.sum(X, axis=1) # shape=(d,)
         D1 = np.diag(sum_over_rows) # diagonal weight matrix, shape=(d,d)
         D2 = np.diag(sum_over_columns) # diagonal weight matrix, shape=(n,n)
+        self.D1, self.D2 = D1, D2
         
         bestP, bestQ = None, None
         forced_exit, best_max_iter_reached, best_no_zero_cols = True, 0, c
         attempt = 0
         while attempt < self.n_attempts and forced_exit:
-            P, Q, forced_exit, max_iter_reached, no_zero_cols = self.attempt_coclustering(X, D1, D2, c, attempt_no=attempt+1)
+            P, Q, S, forced_exit, max_iter_reached, no_zero_cols = self.attempt_coclustering(X, D1, D2, c, attempt_no=attempt+1)
             if max_iter_reached > best_max_iter_reached:
                 self.print_or_log("is best because 1") 
                 # NOTE: forced_exit=False will always go further and get the better max_iter
                 best_max_iter_reached, best_no_zero_cols = max_iter_reached, no_zero_cols
-                bestP, bestQ = P, Q
+                bestP, bestQ, bestS = P, Q, S
                 if self.verbose:
                     self.print_or_log("\n__is__ best!")
             elif max_iter_reached == best_max_iter_reached and no_zero_cols < best_no_zero_cols:
                 self.print_or_log("best because 2")
                 best_no_zero_cols = no_zero_cols
-                bestP, bestQ = P, Q
+                bestP, bestQ, bestS = P, Q, S
                 if self.verbose:
                     self.print_or_log("\n__is__ best!")
             attempt += 1
 
         if forced_exit:
             self.print_or_log("｡ﾟ(ﾟ´Д｀ﾟ)ﾟ｡　singular matrix every time nuu :c\n")
-        assert (not bestP is None), "bestp best q undefined !!"
-        self.P, self.Q = bestP, bestQ
+        self.P, self.Q, self.S = bestP, bestQ, bestS
         self.best_no_zero_cols, self.best_max_iter_reached = best_no_zero_cols, best_max_iter_reached
         self.biclusters_, self.row_labels_, self.column_labels_ = WBKM_coclustering.get_stuff(P, Q)
         

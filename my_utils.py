@@ -95,10 +95,15 @@ def count_zero_columns (M : np.ndarray):
     zero_cols = np.argwhere( (M_col_sum == 0))
     return zero_cols.shape[0]
 
-def print_silhouette_score (data, row_labels, column_labels, logger=logging.getLogger(__name__)):
+#def print_silhouette_score (data, row_labels, column_labels, logger=logging.getLogger(__name__)):
+def print_silhouette_score (data, row_labels, column_labels, logger=None):
     sil_score_row = silhouette_score(data, row_labels)
     sil_score_col = silhouette_score(data.T, column_labels)
-    logger.info(f"\nsilhouette score:\n\trows: {sil_score_row:.3f}\n\tcols: {sil_score_col:.3f}\n")
+    results_message = f"\nsilhouette score:\n\trows: {sil_score_row:.3f}\n\tcols: {sil_score_col:.3f}\n"
+    if logger:
+        logger.info(results_message)
+    else:
+        print(results_message)
     return (sil_score_row, sil_score_col)
 
 def bic_boolean_to_labels (bic):
