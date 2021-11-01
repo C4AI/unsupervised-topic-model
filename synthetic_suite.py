@@ -15,10 +15,7 @@ from pprint import pprint
 import sys,os,time
 import logging
 from datetime import datetime
-from numba import jit, njit
-from pyqtgraph.Qt import QtCore, QtGui
-#import pyqtgraph.opengl as gl
-import pyqtgraph as pg
+#from numba import jit, njit
 from collections import deque 
 import pandas as pd
 
@@ -38,9 +35,9 @@ TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synt
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
 MOVIE = False # (NBVD) display movie showing clustering iterations
-SYNTHETIC_DATASET = 13 # (Task 2) chosen dataset
+SYNTHETIC_DATASET = 26 # (Task 2) chosen dataset
 WAIT_TIME = 4 # (Task 3) wait time between tasks
-SHOW_IMAGES = False # (Task 3) display matrices
+SHOW_IMAGES = True # (Task 3) display matrices
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
 SYNTHETIC_FOLDER = 'synthetic/DataSets' # (Task 3) directory where synthetic datasets are stored
 LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and results sheet
@@ -186,13 +183,13 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
     # matplotlib
-    if alg == 'nbvd':
-        to_plot = [data, model.R@model.B@model.C, model.B]
-        names = ["Original dataset", "Block value matrix RBC", "Block value matrix B"]
-    elif alg == 'wbkm':
-        to_plot = [data, model.P@model.S@model.Q.T, model.D1@model.P@model.S@model.Q.T@model.D2]
-        names = ["Original dataset", "Reconstructed matrix? (dont think so)", "Reconstructed matrix...?"]
     if show_images:
+        if alg == 'nbvd':
+            to_plot = [data, model.R@model.B@model.C, model.B]
+            names = ["Original dataset", "Block value matrix RBC", "Block value matrix B"]
+        elif alg == 'wbkm':
+            to_plot = [data, model.P@model.S@model.Q.T, model.D1@model.P@model.S@model.Q.T@model.D2]
+            names = ["Original dataset", "Reconstructed matrix? (dont think so)", "Reconstructed matrix...?"]
         plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
 
     if SHUFFLE_TEST:
@@ -311,7 +308,8 @@ def main():
         do_task_single(data,alg=alg, n_attempts=ATTEMPTS_MAX, logger=None)
     elif TASK == 3:
         n_attempts = ATTEMPTS_MAX
-        alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans'] 
+        #alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans']
+        alg_list = ['wbkm'] 
 
         # setup logging and results sheet
         os.makedirs(LOG_BASE_FOLDER, exist_ok=True)

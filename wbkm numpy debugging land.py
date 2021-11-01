@@ -23,7 +23,6 @@ ITER_MAX = 5 # 5 seems ok..? (at least for synthetic data)
 #TODO: test '# or maybe just keep going but dont recalculate S, although i dont think that makes a difference'
 #TODO: make it work with numba
 
-
 # NOTE: 297395776 leads to singular newQ and newP, both with no ones in the 0th column
 # so everything breaks on iter 1, step 1
 # question: are all cases doable? also maybe check convergence individually? (not sure if it matters actually)
@@ -275,6 +274,8 @@ class WBKM_coclustering:
         D1 = np.diag(sum_over_rows) # diagonal weight matrix, shape=(d,d)
         D2 = np.diag(sum_over_columns) # diagonal weight matrix, shape=(n,n)
         self.D1, self.D2 = D1, D2
+        if not np.diag(D1).all() or not np.diag(D2).all(): # if not all elements are non-zero
+            raise Exception("D1 or D2 has zero elements; WBKM will fail")
         
         bestP, bestQ = None, None
         forced_exit, best_max_iter_reached, best_no_zero_cols = True, 0, c
