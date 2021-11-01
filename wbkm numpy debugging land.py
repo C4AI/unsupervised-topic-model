@@ -14,9 +14,7 @@ from dataclasses import dataclass, field
 from pprint import pprint
 import sys, logging
 
-RNG_SEED=996535595 #297395776
-NO_CLUSTERS = 5 # 4
-MAT_SIZE = 500 # 500
+
 ATTEMPTS_MAX = 10 # it'll work eventually!
 ITER_MAX = 5 # 5 seems ok..? (at least for synthetic data)
 
@@ -94,13 +92,14 @@ class WBKM_coclustering:
     biclusters_: np.ndarray = field(init=False)
     row_labels_: np.ndarray = field(init=False)
     column_labels_: np.ndarray = field(init=False)
+    best_norm : float = field(init=False)
+    best_max_iter_reached : int = field(init=False)
+    best_no_zero_cols : int = field(init=False)
     P : np.ndarray = field(init=False)
     Q : np.ndarray = field(init=False)
     S : np.ndarray = field(init=False)
     D1 : np.ndarray = field(init=False)
     D2 : np.ndarray = field(init=False)
-    best_max_iter_reached : int = field(init=False)
-    best_no_zero_cols : int = field(init=False)
 
     def print_or_log(self, s):
         # NOTE: logging might break if there's an exception while logging
@@ -175,7 +174,7 @@ class WBKM_coclustering:
         col = np.argmax(Q, axis=1)
         return bic, row, col
     
-    def objective (self, X, D1, D2, S, Q, P):
+    def objective (self, X, D1, D2, S, Q, P, attempt_no=-42):
         try:
             obj = norm(
                 fmp(D1,-0.5)@X@fmp(D2,-0.5) - fmp(D1,0.5)@P@S@Q.T@fmp(D2,0.5)
@@ -183,8 +182,10 @@ class WBKM_coclustering:
         except Exception as e:
             self.print_or_log(str(e))
             obj = np.nan
+        if self.verbose:
+            self.print_or_log(f"  Attempt #{attempt_no} norm: {obj}")
         return obj
-    
+
     def attempt_coclustering (self, X, D1, D2, c, attempt_no=0):
         s = cool_header_thing()
         self.print_or_log(f"\n{s}\nAttempt #{attempt_no}:\n{s}\n")
@@ -199,8 +200,8 @@ class WBKM_coclustering:
         stop_everything, no_zero_cols = False, 0
         iteration = 0
         S = inv(P.T @ D1 @ P @ Q.T @ D2 @ Q) @ f(P.T @ X @ Q)
-        obj = self.objective(X, D1, D2, S, Q, P)
-        self.print_or_log(f"\nobjective: {obj}")
+        #obj = self.objective(X, D1, D2, S, Q, P)
+        #self.print_or_log(f"\nobjective: {obj}")
         while iteration < self.iter_max: # FIXME: add convergence condition # frobenius on newP,P and newQ,Q?
             if iteration != 0:
                 Q = newQ
@@ -236,8 +237,8 @@ class WBKM_coclustering:
             L = S @ newQ.T # FIXME: newQ or Q?
             newP = self.getNewP(P, L, X, D1, D2)
             
-            obj = self.objective(X, D1, D2, S, newQ, newP)
-            self.print_or_log(f"objective: {obj}\n")
+            #obj = self.objective(X, D1, D2, S, newQ, newP)
+            #self.print_or_log(f"objective: {obj}\n")
             iteration += 1 # increase iteration counter
         self.print_or_log(f"stuff: {stop_everything}, {iteration}, {no_zero_cols}")
         
@@ -245,30 +246,11 @@ class WBKM_coclustering:
 
     # run after auto-generated init
     def __post_init__(self):
-        # pre-initialization
-
         # initialization
-
-        """
-        # float128 is just longdouble; it's platform-dependent; but most of all it's unsupported by linalg
-        # and commenting out the type check (in np.linalg._realType) doesn't seem to work :(  
-        # (_umath_linalg is object code)
-        # possible alternative: https://mpmath.org/
-        # https://stackoverflow.com/questions/9062562/what-is-the-internal-precision-of-numpy-float128/17023995#17023995
-        """
-        ##################### #OMEGA NOTE #########################################
-        # a lot of outdated info ;-;
-        ##################### #OMEGA NOTE #########################################
         self.RNG = default_rng(self.random_state)
-        preferred_dtype = np.float64
-        X = np.array(self.data, dtype=preferred_dtype) if not isinstance(self.data, np.ndarray) else self.data.astype(preferred_dtype)      
-
+        X = np.array(self.data) if not isinstance(self.data, np.ndarray) else self.data     
         c = self.n_clusters
 
-        # NOTE: D1 and D2 have VERY LARGE entries with default values for make_biclusters
-        # (minval=10 and maxval=100 for the clusters leads to entries around 5e3 in D1, 
-        # so np.linalg.det(D1)==inf  c: )
-        ## inv can still work though
         sum_over_columns = np.sum(X, axis=0) # shape=(n,)
         sum_over_rows = np.sum(X, axis=1) # shape=(d,)
         D1 = np.diag(sum_over_rows) # diagonal weight matrix, shape=(d,d)
@@ -277,106 +259,35 @@ class WBKM_coclustering:
         if not np.diag(D1).all() or not np.diag(D2).all(): # if not all elements are non-zero
             raise Exception("D1 or D2 has zero elements; WBKM will fail")
         
-        bestP, bestQ = None, None
-        forced_exit, best_max_iter_reached, best_no_zero_cols = True, 0, c
+        bestP, bestQ, bestS = None, None, None
+        forced_exit, best_max_iter_reached, best_no_zero_cols, best_norm = True, 0, c, np.inf
         attempt = 0
         while attempt < self.n_attempts and forced_exit:
             P, Q, S, forced_exit, max_iter_reached, no_zero_cols = self.attempt_coclustering(X, D1, D2, c, attempt_no=attempt+1)
-            if max_iter_reached > best_max_iter_reached:
-                self.print_or_log("is best because 1") 
-                # NOTE: forced_exit=False will always go further and get the better max_iter
-                best_max_iter_reached, best_no_zero_cols = max_iter_reached, no_zero_cols
-                bestP, bestQ, bestS = P, Q, S
-                if self.verbose:
-                    self.print_or_log("\n__is__ best!")
-            elif max_iter_reached == best_max_iter_reached and no_zero_cols < best_no_zero_cols:
-                self.print_or_log("best because 2")
-                best_no_zero_cols = no_zero_cols
-                bestP, bestQ, bestS = P, Q, S
-                if self.verbose:
-                    self.print_or_log("\n__is__ best!")
-            attempt += 1
+            obj = self.objective(X, D1, D2, S, Q, P)
 
+            # decide if better
+            if obj < best_norm:
+                best_norm, best_max_iter_reached, best_no_zero_cols = obj, max_iter_reached, no_zero_cols
+                bestP, bestQ, bestS = P, Q, S
+                if self.verbose:
+                    self.print_or_log("\n__is best__ now because 0!")
+            elif max_iter_reached > best_max_iter_reached:
+                # NOTE: forced_exit=False will always go further and get the better max_iter
+                best_norm, best_max_iter_reached, best_no_zero_cols = obj, max_iter_reached, no_zero_cols
+                bestP, bestQ, bestS = P, Q, S
+                if self.verbose:
+                    self.print_or_log("\n__is best__ because 1!")
+            elif max_iter_reached == best_max_iter_reached and no_zero_cols < best_no_zero_cols:
+                best_norm, best_max_iter_reached, best_no_zero_cols = obj, max_iter_reached, no_zero_cols
+                bestP, bestQ, bestS = P, Q, S
+                if self.verbose:
+                    self.print_or_log("\n__best because 2!")
+            attempt += 1
+        
         if forced_exit:
             self.print_or_log("｡ﾟ(ﾟ´Д｀ﾟ)ﾟ｡　singular matrix every time nuu :c\n")
         self.P, self.Q, self.S = bestP, bestQ, bestS
-        self.best_no_zero_cols, self.best_max_iter_reached = best_no_zero_cols, best_max_iter_reached
+        self.best_norm, self.best_no_zero_cols, self.best_max_iter_reached = best_norm, best_no_zero_cols, best_max_iter_reached
         self.biclusters_, self.row_labels_, self.column_labels_ = WBKM_coclustering.get_stuff(P, Q)
         
-if __name__ == '__main__':
-    RNG = start_default_rng(seed=RNG_SEED+1)
-    
-    data, rows, columns = make_biclusters(
-        shape=(MAT_SIZE, MAT_SIZE), n_clusters=NO_CLUSTERS, shuffle=False, random_state=RNG_SEED,
-        noise=0.01,
-        minval=0.3,
-        maxval=0.7
-    )
-    
-
-    plt.matshow(data, cmap=plt.cm.Blues)
-    plt.title("Original dataset")
-    plt.savefig("bla1.png")
-
-    # shuffle clusters
-    row_idx = RNG.permutation(data.shape[0])
-    col_idx = RNG.permutation(data.shape[1])
-    data = data[row_idx][:, col_idx]
-
-    plt.matshow(data, cmap=plt.cm.Blues)
-    plt.title("Shuffled dataset")
-    plt.savefig("bla2.png")
-
-    # do co-clustering
-    model = WBKM_coclustering(data, n_clusters=NO_CLUSTERS, random_state=RNG_SEED, n_attempts=ATTEMPTS_MAX,
-        verbose=True)
-    #pprint(model.biclusters_)
-    #pprint(model.row_labels_)
-    #pprint(model.column_labels_)
-
-    #########################
-    # evaluate results 
-    #########################
-        
-    # bicluster-specific:
-    bic_true = rows[:, row_idx], columns[:, col_idx]
-    bic_pred = model.biclusters_
-    con_score = consensus_score(bic_true, bic_pred)
-    print("\nconsensus score: {:.3f}".format(con_score))
-
-    sil_score_row = silhouette_score(data, model.row_labels_) # move below? do external/internal?
-    sil_score_col = silhouette_score(data.T, model.column_labels_)
-    print(f"\nsilhouette score:\n\trows: {sil_score_row:.3f}\n\tcols: {sil_score_col:.3f}")
-
-    # retrieve integer labels
-    def bic_boolean_to_labels (bic):
-        rows, cols = bic
-        labelize = lambda a: np.argmax(a, axis=0)
-        row_labels, col_labels = labelize(rows), labelize(cols)
-        return row_labels, col_labels
-    pred_rows, pred_columns = model.row_labels_, model.column_labels_
-    true_rows, true_columns = bic_boolean_to_labels(bic_true)
-
-    # rows (samples):
-    #acc = accuracy_score(bic_true[0].T, bic_pred[0].T) # acc not work :c
-    #acc = accuracy_score(true_rows, pred_rows)
-    ari = adjusted_rand_score(true_rows, pred_rows)
-    ami = adjusted_mutual_info_score(true_rows, pred_rows)
-    vmeasure = v_measure_score(true_rows, pred_rows)
-    print(f"rows:\n  ARI= {ari:.3f}\n  AMI= {ami:.3f}\n  VMs= {vmeasure:.3f}\n")
-
-    # columns (features/attributes):
-    #acc = accuracy_score(bic_true[1], bic_pred[1])
-    ari = adjusted_rand_score(true_columns, pred_columns)
-    vmeasure = v_measure_score(true_columns, pred_columns)
-    ami = adjusted_mutual_info_score(true_columns, pred_columns)
-    print(f"columns:\n  ARI= {ari:.3f}\n  AMI= {ami:.3f}\n  VMs= {vmeasure:.3f}\n")
-
-    # rearranged data
-    fit_data = data[np.argsort(model.row_labels_)]
-    fit_data = fit_data[:, np.argsort(model.column_labels_)]
-    plt.matshow(fit_data, cmap=plt.cm.Blues)
-    plt.title("After biclustering; rearranged to show biclusters")
-    plt.savefig("bla3.png")
-
-    plt.show()

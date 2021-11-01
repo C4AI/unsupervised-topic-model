@@ -26,18 +26,18 @@ from generateSyntheticData_mod import generateSyntheticData
 
 RNG_SEED=996535595 # seed for reproducibility
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
-MAT_SIZE = 600 # matrix size (square)
+MAT_SHAPE = (600, 600) # matrix shape
 
 ALG = 'nbvd' # (Task != 3) clustering algorithm
 ATTEMPTS_MAX = 10 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
-TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
+TASK = 3 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
 MOVIE = False # (NBVD) display movie showing clustering iterations
-SYNTHETIC_DATASET = 26 # (Task 2) chosen dataset
+SYNTHETIC_DATASET = 13 # (Task 2) chosen dataset
 WAIT_TIME = 4 # (Task 3) wait time between tasks
-SHOW_IMAGES = True # (Task 3) display matrices
+SHOW_IMAGES = False # (Task 3) display matrices
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
 SYNTHETIC_FOLDER = 'synthetic/DataSets' # (Task 3) directory where synthetic datasets are stored
 LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and results sheet
@@ -186,10 +186,10 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
     if show_images:
         if alg == 'nbvd':
             to_plot = [data, model.R@model.B@model.C, model.B]
-            names = ["Original dataset", "Block value matrix RBC", "Block value matrix B"]
+            names = ["Original dataset", "Reconstructed matrix RBC", "Block value matrix B"]
         elif alg == 'wbkm':
-            to_plot = [data, model.P@model.S@model.Q.T, model.D1@model.P@model.S@model.Q.T@model.D2]
-            names = ["Original dataset", "Reconstructed matrix? (dont think so)", "Reconstructed matrix...?"]
+            to_plot = [data, model.D1@model.P@model.S@model.Q.T@model.D2, model.P@model.S@model.Q.T]
+            names = ["Original dataset", "Reconstructed matrix...?", "Matrix that looks funny sometimes"]
         plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
 
     if SHUFFLE_TEST:
@@ -204,7 +204,7 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
             best_iter=model.best_iter, best_norm=model.best_norm, n_attempts=n_attempts)
     elif alg == 'wbkm':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
-            max_iter_reached=model.best_max_iter_reached,
+            max_iter_reached=model.best_max_iter_reached, best_norm=model.best_norm,
             no_zero_cols=model.best_no_zero_cols, n_attempts=n_attempts)
     elif alg == 'spectral':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=n_attempts)
@@ -265,23 +265,25 @@ def main():
     RNG = start_default_rng(seed=RNG_SEED)
     RNG_SEED = RNG_SEED if RNG_SEED else RNG.integers(low=0, high=2**30)
 
+    # prepare data
     if TASK==0:
         data, rows, columns = make_biclusters(
-            shape=(MAT_SIZE, MAT_SIZE), n_clusters=N_ROW_CLUSTERS, shuffle=False, random_state=RNG_SEED,
+            shape=MAT_SHAPE, n_clusters=N_ROW_CLUSTERS, shuffle=False, random_state=RNG_SEED,
             noise=0, # no negative values
             minval=0.3,
             maxval=300
         )
     elif TASK==1:
-        data = random_block_matrix((MAT_SIZE, MAT_SIZE), n_row_clusters=N_ROW_CLUSTERS, n_col_clusters=N_COL_CLUSTERS, seed=RNG_SEED)
+        data = random_block_matrix(*MAT_SHAPE, n_row_clusters=N_ROW_CLUSTERS, n_col_clusters=N_COL_CLUSTERS, seed=RNG_SEED)
     elif TASK==2 or TASK==3:
         # generate synthetic datasets fi necessary
         os.makedirs(SYNTHETIC_FOLDER, exist_ok=True)
         if RERUN_GENERATE or not os.listdir(SYNTHETIC_FOLDER):
+            print("Generating synthetic datasets ...")
             # empty folder if not already empty
             for f in os.listdir(SYNTHETIC_FOLDER):
                 os.remove(os.path.join(SYNTHETIC_FOLDER, f))
-            generateSyntheticData(MAT_SIZE, MAT_SIZE, 0, directory=SYNTHETIC_FOLDER)
+            generateSyntheticData(*MAT_SHAPE, 0, directory=SYNTHETIC_FOLDER)
 
         synthetic_data_names = get_synthetic_data_list(SYNTHETIC_FOLDER)
         datasets = []
@@ -301,15 +303,16 @@ def main():
             print(f"""\n{s1}  {''.join(list(reversed(s1)))}\n{s2} {''.join(list(reversed(s2)))}
             Task: {task_name}\n{s1} {''.join(list(reversed(s1)))}\n{s2}  {''.join(list(reversed(s2)))}""")
 
+    # do the actual task
     if TASK == 0:
         do_task_single(data, true_labels=(rows, columns))
     elif TASK == 1 or TASK == 2:
-        alg='wbkm'
+        alg=ALG
         do_task_single(data,alg=alg, n_attempts=ATTEMPTS_MAX, logger=None)
     elif TASK == 3:
         n_attempts = ATTEMPTS_MAX
-        #alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans']
-        alg_list = ['wbkm'] 
+        alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans']
+        #alg_list = ['wbkm'] 
 
         # setup logging and results sheet
         os.makedirs(LOG_BASE_FOLDER, exist_ok=True)
@@ -317,7 +320,8 @@ def main():
         log_folder = os.path.join(LOG_BASE_FOLDER, now)
         logger = logger_setup(log_folder)
         sheet_path = os.path.join(log_folder, '___results.xlsx')
-        writer = pd.ExcelWriter(path=sheet_path)
+        #writer = pd.ExcelWriter(path=sheet_path)
+        writer = pd.ExcelWriter(path=sheet_path, engine='xlxsxwriter')
 
         # do several experiments
         for alg in alg_list:
