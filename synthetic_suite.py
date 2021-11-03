@@ -24,12 +24,11 @@ import pandas as pd
 from my_utils import *
 from nbvd import NBVD_coclustering
 wbkm = __import__("wbkm numpy debugging land")
-from generateSyntheticData_mod import generateSyntheticData
 
 RNG_SEED=996535595 # seed for reproducibility
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
-SPARSITY = 30 # (Tasks 2,3) fill x % of matrix with zeroes
+SPARSITY = 50 # (Tasks 2,3) fill x % of matrix with zeroes
 
 ALG = 'nbvd' # (Task != 3) clustering algorithm
 ATTEMPTS_MAX = 10 # (NBVD, WBKM) maximum attempts
@@ -38,19 +37,12 @@ TASK = 3 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synt
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
 MOVIE = False # (NBVD) display movie showing clustering iterations
-SYNTHETIC_DATASET = 4 # (Task 2) chosen dataset
+DATASET_NO = 4 # (Task 2) chosen dataset
 WAIT_TIME = 4 # (Task 3) wait time between tasks
 SHOW_IMAGES = False # (Task 3) display matrices
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
 SYNTHETIC_FOLDER = 'synthetic/DataSets' # (Task 3) directory where synthetic datasets are stored
 LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and results sheet
-
-np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
-
-############################################################################## 
-# to use a set number of cpus: 
-#   taskset --cpu-list 0-7 python "synthetic_suite.py"
-##############################################################################
 
 def logger_setup(log_folder : str, level=logging.DEBUG):
     logger = logging.getLogger(__name__)
@@ -81,36 +73,9 @@ def file_handler_add(logger : logging.Logger, name : str, replace=True, level=lo
         logger.removeHandler(logger.handlers[-1])
     logger.addHandler(fh)
 
-def random_block_matrix (shape, n_row_clusters, n_col_clusters, seed=None):
-    """more like 'some blocky gradient thing'"""
-
-    rng = np.random.default_rng(seed=seed)
-    k, l = n_row_clusters, n_col_clusters
-    #block_map = rng.integers(size=(k,l), low=0, high=k*l//4+1)
-    block_map = 2*np.reshape(np.arange(k*l), (k,l))
-    
-    block_list=[]
-    elem_shape = (shape[0]//k, shape[1]//l)
-    for i in range(k):
-        block_line = []
-        for j in range(l):
-            elem = block_map[i,j] * np.ones(elem_shape)
-            block_line.append(elem)
-        block_list.append(block_line)
-    block_matrix = np.block(block_list)
-    #block_matrix = np.reshape(block_matrix, shape) # doesnt fix the finnickiness
-
-    return block_matrix
-
-def get_synthetic_data_list (data_dir):
-    return os.listdir(data_dir)
-
-def load_dataset (data_dir, filename):
-    path = os.path.join(data_dir, filename)
-    return np.loadtxt(path, delimiter=';')
-
 def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=ATTEMPTS_MAX, 
-        show_images=True, first_image_save_path=None, logger=logging.getLogger(__name__)):
+        show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None):
+    RNG = np.random.default_rng(RNG_SEED)
     if logger:
         logger.info(f"shape: {data.shape}")
     else:
@@ -213,17 +178,18 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
     elif alg == 'kmeans':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
+
     return bunch
 
-pretty = {
+def fill_sheet (sheet, results, task_name):
+    pretty = {
     'best_iter': 'Iterações',
     'best_norm': 'Norma (objetivo) final',
     'n_attempts': 'Tentativas',
     'silhouette': 'Silhouette score',
     'max_iter_reached': 'Iterações',
     'no_zero_cols': 'Nº clusters nulos',
-}
-def fill_sheet (sheet, results, task_name):
+    }
     series = pd.Series(name=task_name, dtype=object) # series name will be the row name
     if results:
         for name, value in results.items():
@@ -265,8 +231,9 @@ def log_best_worst (pq : PriorityQueue, name, logger):
 
 def main():
     global RNG_SEED
-    RNG = start_default_rng(seed=RNG_SEED)
-    RNG_SEED = RNG_SEED if RNG_SEED else RNG.integers(low=0, high=2**30)
+    RNG, RNG_SEED = start_default_rng(seed=RNG_SEED)
+    np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
+
 
     # prepare data
     if TASK==0:
@@ -280,38 +247,17 @@ def main():
         data = random_block_matrix(*MAT_SHAPE, n_row_clusters=N_ROW_CLUSTERS, n_col_clusters=N_COL_CLUSTERS, seed=RNG_SEED)
     elif TASK==2 or TASK==3:
         # generate synthetic datasets fi necessary
-        os.makedirs(SYNTHETIC_FOLDER, exist_ok=True)
-        if RERUN_GENERATE or not os.listdir(SYNTHETIC_FOLDER):
-            print("Generating synthetic datasets ...")
-            # empty folder if not already empty
-            for f in os.listdir(SYNTHETIC_FOLDER):
-                os.remove(os.path.join(SYNTHETIC_FOLDER, f))
-            generateSyntheticData(*MAT_SHAPE, SPARSITY, directory=SYNTHETIC_FOLDER, seed=RNG_SEED)
-
-        synthetic_data_names = get_synthetic_data_list(SYNTHETIC_FOLDER)
-        datasets = []
-        for i,filename in enumerate(synthetic_data_names):
-            dataset = load_dataset(SYNTHETIC_FOLDER, filename)
-            task_name = filename.replace(".txt", "")
-            if dataset.ndim == 2: # only matrices
-                datasets.append((dataset, task_name))
-        datasets.sort(key = lambda t : t[1]) # sort datasets by task_name
-
-        # print info about synthetic tasks
-        if TASK==2:       
-            print("Datasets available:")
-            print(*[name for d,name in datasets], sep="\n")
-            data, task_name = datasets[SYNTHETIC_DATASET]
-            s1,s2=cool_header_thing(), cool_header_thing()
-            print(f"""\n{s1}  {''.join(list(reversed(s1)))}\n{s2} {''.join(list(reversed(s2)))}
-            Task: {task_name}\n{s1} {''.join(list(reversed(s1)))}\n{s2}  {''.join(list(reversed(s2)))}""")
+        datasets = make_synthetic_datasets(MAT_SHAPE, SPARSITY, SYNTHETIC_FOLDER, 
+            seed=RNG_SEED, rerun_generate=RERUN_GENERATE, print_info=(TASK==2)*DATASET_NO)
+        if TASK == 2:
+            data, task_name = datasets[DATASET_NO]
 
     # do the actual task
     if TASK == 0:
-        do_task_single(data, true_labels=(rows, columns))
+        do_task_single(data, true_labels=(rows, columns), RNG_SEED=RNG_SEED)
     elif TASK == 1 or TASK == 2:
         alg=ALG
-        do_task_single(data,alg=alg, n_attempts=ATTEMPTS_MAX, logger=None)
+        do_task_single(data, alg=alg, RNG_SEED=RNG_SEED)
     elif TASK == 3:
         n_attempts = ATTEMPTS_MAX
         alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans']
@@ -326,10 +272,15 @@ def main():
         #writer = pd.ExcelWriter(path=sheet_path) # openpyxl by default
         writer = pd.ExcelWriter(path=sheet_path, engine='xlsxwriter')
 
+        # dump globals
+        file_handler_add(logger, "Ω_globals")
+        dump_globals(globals(), logger=logger)
+
         # do several experiments
         for alg in alg_list:
             sheet = pd.DataFrame() # create new empty sheet for this alg
             pq = PriorityQueue()
+
             for d, task_name in datasets:
                 file_handler_add(logger, f"{task_name}_{alg.upper()}")
                 s1,s2=cool_header_thing(), cool_header_thing()
@@ -340,7 +291,8 @@ def main():
 
                 try:
                     results = do_task_single(d, only_one=False, alg=alg, n_attempts=n_attempts, 
-                        show_images=SHOW_IMAGES, first_image_save_path=first_image_save_path)
+                        show_images=SHOW_IMAGES, first_image_save_path=first_image_save_path, 
+                        RNG_SEED=RNG_SEED, logger=logger)
                 except Exception as e:
                     results = None # blank line
                     logger.info(str(e)) # show exception text but don't stop

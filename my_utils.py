@@ -22,6 +22,13 @@ import pyqtgraph as pg
 from collections import deque 
 import pandas as pd
 
+from generateSyntheticData_mod import generateSyntheticData
+
+############################################################################## 
+# to use a set number of cpus: 
+#   taskset --cpu-list 0-7 python "synthetic_suite.py"
+##############################################################################
+
 @dataclass(order=True)
 class MeanTuple:
     """Compare float tuples using their mean."""
@@ -35,6 +42,48 @@ class MeanTuple:
     def __str__(self):
         template = ", ".join(["{:.3f}" for _ in self.numbers])
         return "(" + template.format(*self.numbers) + ")"
+
+def make_synthetic_datasets (mat_shape, sparsity, synthetic_folder, seed=None, rerun_generate=False, print_info=False):
+    """Write datasets to disk (if necessary); optionally print info about datasets 
+    (and if given an int, print the name of the corresponding task).
+    
+    Returns the loaded datasets.
+    """
+
+    def load_dataset (data_dir, filename):
+        path = os.path.join(data_dir, filename)
+        return np.loadtxt(path, delimiter=';')
+
+    # write datasets to disk (if necessary)
+    synthetic_folder_shape_sparsity = os.path.join(synthetic_folder, f"{mat_shape[0]}-{mat_shape[1]}-{sparsity}")
+    os.makedirs(synthetic_folder_shape_sparsity, exist_ok=True)
+    if rerun_generate or not os.listdir(synthetic_folder_shape_sparsity):
+        print("Generating synthetic datasets ...")
+        # empty folder if not already empty
+        for f in os.listdir(synthetic_folder_shape_sparsity):
+            os.remove(os.path.join(synthetic_folder_shape_sparsity, f))
+        generateSyntheticData(*mat_shape, sparsity, directory=synthetic_folder_shape_sparsity, seed=seed)
+
+    # load datasets from disk
+    synthetic_data_names = os.listdir(synthetic_folder_shape_sparsity)
+    datasets = []
+    for i,filename in enumerate(synthetic_data_names):
+        dataset = load_dataset(synthetic_folder_shape_sparsity, filename)
+        task_name = filename.replace(".txt", "")
+        if dataset.ndim == 2: # only matrices
+            datasets.append((dataset, task_name))
+    datasets.sort(key = lambda t : t[1]) # sort datasets by task_name
+
+    # print info about synthetic tasks
+    if print_info:       
+        print("Datasets available:")
+        print(*[name for d,name in datasets], sep="\n")
+        if type(print_info) == int:
+            data, task_name = datasets[print_info]
+            s1,s2=cool_header_thing(), cool_header_thing()
+            print(f"""\n{s1}  {''.join(list(reversed(s1)))}\n{s2} {''.join(list(reversed(s2)))}
+            Task: {task_name}\n{s1} {''.join(list(reversed(s1)))}\n{s2}  {''.join(list(reversed(s2)))}""")
+    return datasets
 
 def plot_matrices(matrices : Iterable, names : Iterable, 
                     timer=None, savefig : str = None):
@@ -57,9 +106,12 @@ def plot_matrices(matrices : Iterable, names : Iterable,
             plt.pause(timer)
         plt.close(fig='all')
 
-def start_default_rng (seed=None, logger=logging.getLogger(__name__)):
+def start_default_rng (seed=None, logger=None):
     """ Start the default RNG with a (user-provided / randomly-generated) seed 
-    so we don't have to store the RNG's starting state (which is less human-friendly)."""
+    so we don't have to store the RNG's starting state (which is less human-friendly).
+    
+    Returns an RNG and a seed (same as the one given if not None).
+    """
 
     if seed:
         new_seed = seed
@@ -67,8 +119,19 @@ def start_default_rng (seed=None, logger=logging.getLogger(__name__)):
         temp_rng = default_rng()
         new_seed = temp_rng.integers(low=0, high=2**30) # get a seed so we don't have to store
     new_rng = default_rng(new_seed)
-    logger.info(f"RNG seed is: {new_seed}\n")
-    return new_rng
+    if logger:
+        logger.info(f"Random seed is: {new_seed}\n")
+    else:
+        print(f"Random seed is: {new_seed}\n")
+    return (new_rng, new_seed)
+
+def dump_globals (globals_dict, logger=None):
+    cool_types = {int, tuple, str, bool}
+    banned_keys = {'__name__', '__file__'}
+    log_or_print = logger.info if logger else print
+    for k, v in globals_dict.items():
+        if k not in banned_keys and type(v) in cool_types:
+            log_or_print(f"{k:^15}:\t\t{v}")
 
 def cool_header_thing ():
     print_rng = default_rng()
@@ -111,6 +174,28 @@ def bic_boolean_to_labels (bic):
     labelize = lambda a: np.argmax(a, axis=0)
     row_labels, col_labels = labelize(rows), labelize(cols)
     return row_labels, col_labels
+
+# TODO: decide: DELETE?
+def random_block_matrix (shape, n_row_clusters, n_col_clusters, seed=None):
+    """more like 'some blocky gradient thing'"""
+
+    rng = np.random.default_rng(seed=seed)
+    k, l = n_row_clusters, n_col_clusters
+    #block_map = rng.integers(size=(k,l), low=0, high=k*l//4+1)
+    block_map = 2*np.reshape(np.arange(k*l), (k,l))
+    
+    block_list=[]
+    elem_shape = (shape[0]//k, shape[1]//l)
+    for i in range(k):
+        block_line = []
+        for j in range(l):
+            elem = block_map[i,j] * np.ones(elem_shape)
+            block_line.append(elem)
+        block_list.append(block_line)
+    block_matrix = np.block(block_list)
+    #block_matrix = np.reshape(block_matrix, shape) # doesnt fix the finnickiness
+
+    return block_matrix
 
 def init_qt_graphics(data_matrix):
     app = pg.mkQApp()
@@ -206,5 +291,4 @@ def adjust_column_width (dataframe, writer, sheet_name):
     # handle width of columns
     for col_idx, column_name in enumerate(dataframe.columns, start=1): # offset 1 to account for 'task name' column
         col_width = max(len(column_name), max([len(v) for v in dataframe[column_name].astype(str)]))
-        print(column_name, col_idx, col_width)        
         writer.sheets[sheet_name].set_column(col_idx, col_idx, col_width) # set width of a range of columns
