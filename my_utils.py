@@ -197,3 +197,14 @@ def pyqtgraph_thing (data, model):
     time.start(50)
     win.show()
     app.exec_() # start qt app
+
+def adjust_column_width (dataframe, writer, sheet_name):
+    # handle width of index
+    first_col_width = max([len(v) for v in dataframe.index.astype(str)])
+    writer.sheets[sheet_name].set_column(0, 0, first_col_width) # set width of a range of columns
+    
+    # handle width of columns
+    for col_idx, column_name in enumerate(dataframe.columns, start=1): # offset 1 to account for 'task name' column
+        col_width = max(len(column_name), max([len(v) for v in dataframe[column_name].astype(str)]))
+        print(column_name, col_idx, col_width)        
+        writer.sheets[sheet_name].set_column(col_idx, col_idx, col_width) # set width of a range of columns

@@ -174,7 +174,7 @@ class WBKM_coclustering:
         col = np.argmax(Q, axis=1)
         return bic, row, col
     
-    def objective (self, X, D1, D2, S, Q, P, attempt_no=-42):
+    def objective (self, X, D1, D2, S, Q, P, attempt_no=-43):
         try:
             obj = norm(
                 fmp(D1,-0.5)@X@fmp(D2,-0.5) - fmp(D1,0.5)@P@S@Q.T@fmp(D2,0.5)
@@ -183,7 +183,7 @@ class WBKM_coclustering:
             self.print_or_log(str(e))
             obj = np.nan
         if self.verbose:
-            self.print_or_log(f"  Attempt #{attempt_no} norm: {obj}")
+            self.print_or_log(f"  Attempt #{attempt_no+1} norm: {obj}")
         return obj
 
     def attempt_coclustering (self, X, D1, D2, c, attempt_no=0):
@@ -201,7 +201,6 @@ class WBKM_coclustering:
         iteration = 0
         S = inv(P.T @ D1 @ P @ Q.T @ D2 @ Q) @ f(P.T @ X @ Q)
         #obj = self.objective(X, D1, D2, S, Q, P)
-        #self.print_or_log(f"\nobjective: {obj}")
         while iteration < self.iter_max: # FIXME: add convergence condition # frobenius on newP,P and newQ,Q?
             if iteration != 0:
                 Q = newQ
@@ -238,7 +237,6 @@ class WBKM_coclustering:
             newP = self.getNewP(P, L, X, D1, D2)
             
             #obj = self.objective(X, D1, D2, S, newQ, newP)
-            #self.print_or_log(f"objective: {obj}\n")
             iteration += 1 # increase iteration counter
         self.print_or_log(f"stuff: {stop_everything}, {iteration}, {no_zero_cols}")
         
@@ -264,7 +262,7 @@ class WBKM_coclustering:
         attempt = 0
         while attempt < self.n_attempts and forced_exit:
             P, Q, S, forced_exit, max_iter_reached, no_zero_cols = self.attempt_coclustering(X, D1, D2, c, attempt_no=attempt+1)
-            obj = self.objective(X, D1, D2, S, Q, P)
+            obj = self.objective(X, D1, D2, S, Q, P, attempt_no=attempt)
 
             # decide if better
             if obj < best_norm:

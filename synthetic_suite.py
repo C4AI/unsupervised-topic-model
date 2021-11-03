@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 from sklearn.datasets import make_biclusters, make_blobs
 from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
-from sklearn.utils import Bunch
+from sklearn.utils import  Bunch
 from dataclasses import dataclass, field
 from typing import Tuple
 from queue import PriorityQueue
@@ -19,7 +19,9 @@ from datetime import datetime
 from collections import deque 
 import pandas as pd
 
-from my_utils import MeanTuple, cool_header_thing, plot_matrices, start_default_rng, print_silhouette_score, bic_boolean_to_labels, pyqtgraph_thing
+#TODO: images for nbvd, wbkm
+
+from my_utils import *
 from nbvd import NBVD_coclustering
 wbkm = __import__("wbkm numpy debugging land")
 from generateSyntheticData_mod import generateSyntheticData
@@ -27,6 +29,7 @@ from generateSyntheticData_mod import generateSyntheticData
 RNG_SEED=996535595 # seed for reproducibility
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
+SPARSITY = 30 # (Tasks 2,3) fill x % of matrix with zeroes
 
 ALG = 'nbvd' # (Task != 3) clustering algorithm
 ATTEMPTS_MAX = 10 # (NBVD, WBKM) maximum attempts
@@ -35,7 +38,7 @@ TASK = 3 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synt
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
 MOVIE = False # (NBVD) display movie showing clustering iterations
-SYNTHETIC_DATASET = 13 # (Task 2) chosen dataset
+SYNTHETIC_DATASET = 4 # (Task 2) chosen dataset
 WAIT_TIME = 4 # (Task 3) wait time between tasks
 SHOW_IMAGES = False # (Task 3) display matrices
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
@@ -207,9 +210,9 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
             max_iter_reached=model.best_max_iter_reached, best_norm=model.best_norm,
             no_zero_cols=model.best_no_zero_cols, n_attempts=n_attempts)
     elif alg == 'spectral':
-        bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=n_attempts)
+        bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
     elif alg == 'kmeans':
-        bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=n_attempts)
+        bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
     return bunch
 
 pretty = {
@@ -283,7 +286,7 @@ def main():
             # empty folder if not already empty
             for f in os.listdir(SYNTHETIC_FOLDER):
                 os.remove(os.path.join(SYNTHETIC_FOLDER, f))
-            generateSyntheticData(*MAT_SHAPE, 0, directory=SYNTHETIC_FOLDER)
+            generateSyntheticData(*MAT_SHAPE, SPARSITY, directory=SYNTHETIC_FOLDER, seed=RNG_SEED)
 
         synthetic_data_names = get_synthetic_data_list(SYNTHETIC_FOLDER)
         datasets = []
@@ -298,7 +301,7 @@ def main():
         if TASK==2:       
             print("Datasets available:")
             print(*[name for d,name in datasets], sep="\n")
-            data, task_name = datasets[SYNTHETIC_DATASET] # 5,22 ok # but for n_clusters=5,5?
+            data, task_name = datasets[SYNTHETIC_DATASET]
             s1,s2=cool_header_thing(), cool_header_thing()
             print(f"""\n{s1}  {''.join(list(reversed(s1)))}\n{s2} {''.join(list(reversed(s2)))}
             Task: {task_name}\n{s1} {''.join(list(reversed(s1)))}\n{s2}  {''.join(list(reversed(s2)))}""")
@@ -312,7 +315,7 @@ def main():
     elif TASK == 3:
         n_attempts = ATTEMPTS_MAX
         alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans']
-        #alg_list = ['wbkm'] 
+        #alg_list = ['wbkm', 'spectral'] 
 
         # setup logging and results sheet
         os.makedirs(LOG_BASE_FOLDER, exist_ok=True)
@@ -320,8 +323,8 @@ def main():
         log_folder = os.path.join(LOG_BASE_FOLDER, now)
         logger = logger_setup(log_folder)
         sheet_path = os.path.join(log_folder, '___results.xlsx')
-        #writer = pd.ExcelWriter(path=sheet_path)
-        writer = pd.ExcelWriter(path=sheet_path, engine='xlxsxwriter')
+        #writer = pd.ExcelWriter(path=sheet_path) # openpyxl by default
+        writer = pd.ExcelWriter(path=sheet_path, engine='xlsxwriter')
 
         # do several experiments
         for alg in alg_list:
@@ -348,11 +351,14 @@ def main():
                     pq.put((mt_silhouette, task_name))
                 finally:
                     sheet = fill_sheet(sheet, results, task_name=task_name)
-            sheet.to_excel(writer, sheet_name=f"{alg.upper()}, n_clusters=({N_ROW_CLUSTERS},{N_COL_CLUSTERS})")
-            writer.save() # else it won't save
+            sheet_name = f"{alg.upper()}, n_clusters=({N_ROW_CLUSTERS},{N_COL_CLUSTERS})"
+            sheet.to_excel(writer, sheet_name=sheet_name)
+            adjust_column_width(sheet, writer, sheet_name=sheet_name)
 
             # get best and worst results
             log_best_worst(pq, name=alg.upper(), logger=logger)
+
+        writer.save() # else it won't save
         
 if __name__ == "__main__":
     main()
