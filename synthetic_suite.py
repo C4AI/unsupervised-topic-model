@@ -24,21 +24,23 @@ import pandas as pd
 from my_utils import *
 from nbvd import NBVD_coclustering
 wbkm = __import__("wbkm numpy debugging land")
+import algorithms
 
 RNG_SEED=996535595 # seed for reproducibility
-N_ROW_CLUSTERS, N_COL_CLUSTERS = 2,2 # number of row, column clusters
+N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
-SPARSITY = 30 # (Tasks 2,3) fill x % of matrix with zeroes
-NOISE = 0 # (Tasks 2,3) fill x % of matrix with zeroes
+SPARSITY = 50 # (Tasks 2,3) fill x % of matrix with zeroes
+NOISE = 0 # (Tasks 2,3) fill x % of matrix with nasty noise
 
-ALG = 'wbkm' # (Task != 3) clustering algorithm
-ATTEMPTS_MAX = 15 # (NBVD, WBKM) maximum attempts
+ALG = 'nbvd' # (Task != 3) clustering algorithm
+ATTEMPTS_MAX = 7 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
+DATASET_NAME = "E-" # (Task 2) chosen dataset (regex expression)
 MOVIE = False # (NBVD) display movie showing clustering iterations
-DATASET_NAME = "A-" # (Task 2) chosen dataset (regex expression)
+NORM_PLOT = True # (NBVD) display norm plot
 WAIT_TIME = 4 # (Task 3) wait time between tasks
 SHOW_IMAGES = True # (Task 3) display matrices
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
@@ -99,7 +101,7 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
     if alg == 'nbvd':
         model = NBVD_coclustering(data, symmetric=SYMMETRIC, n_row_clusters=N_ROW_CLUSTERS, 
             n_col_clusters=N_COL_CLUSTERS, n_attempts=n_attempts, random_state=RNG_SEED, 
-            verbose=True, save_history=False, logger=logger)
+            verbose=True, save_history=MOVIE, save_norm_history=NORM_PLOT, logger=logger)
     elif alg == 'wbkm':
         model = wbkm.WBKM_coclustering(data, n_clusters=N_ROW_CLUSTERS, n_attempts=n_attempts,
             random_state=RNG_SEED, verbose=True, logger=logger)
@@ -115,6 +117,12 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         col_model = KMeans(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
         col_model.fit(data.T)
         model.column_labels_ = col_model.labels_
+    elif ALG == 'nbvd_waldyr':
+        U, S, V, resNEW, itr = algorithms.NBVD(data, N_ROW_CLUSTERS, N_COL_CLUSTERS, itrMAX=2000)
+        model = lambda: None
+        model.U, model.S, model.V = U, S, V
+        model.biclusters_, model.row_labels_, model.column_labels_ = NBVD_coclustering.get_stuff(U, V.T)
+        print("resNEW, itr:", resNEW, itr) # resNEW is norm squared; itr is iteration_no
     
     if MOVIE and alg == 'nbvd':
         pyqtgraph_thing(data, model)
@@ -160,8 +168,13 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         elif alg == 'wbkm':
             to_plot = [data, model.D1@model.P@model.S@model.Q.T@model.D2, model.P@model.S@model.Q.T]
             names = ["Original dataset", "Reconstructed matrix...?", "Matrix that looks funny sometimes"]
+        elif alg =="nbvd_waldyr":
+            to_plot = [data, model.U@model.S@model.V.T, model.S]
+            names = ["Original dataset", "Reconstructed matrix USV.T", "Block value matrix S"]
+        if hasattr(model, "norm_history"):
+            y = model.norm_history
+            plt.plot(range(len(y)), y)
         plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
-
     if SHUFFLE_TEST:
         # rearranged data
         fit_data = data[np.argsort(model.row_labels_)]

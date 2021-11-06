@@ -19,7 +19,7 @@ import pyqtgraph as pg
 from collections import deque
 import logging
 
-from my_utils import cool_header_thing, start_default_rng, mat_debug, count_zero_columns
+from my_utils import *
 
 # TODO: fix first exit condition
 
@@ -49,6 +49,7 @@ class NBVD_coclustering:
     random_state: int = None
     verbose: bool = False
     save_history: bool = False
+    save_norm_history: bool = False
     logger : logging.Logger = None
 
     # properties calculated post init
@@ -98,21 +99,26 @@ class NBVD_coclustering:
         self.print_or_log("\n")
 
     #@njit
-    def attempt_coclustering(self, R,B,C,Z, save_history=False):
+    def attempt_coclustering(self, R,B,C,Z):
         # NOTE: convergence check helps prevent nan-land
         i, previous_norm, current_norm = 0, np.inf, np.inf
         higher_dim, mean = max(Z.shape), Z.mean()
-        if save_history:
+        if self.save_history:
             self.current_history = deque()
             self.current_history.append((R.copy(),B.copy(),C.copy()))
+        if self.save_norm_history:
+            self.current_norm_history = []
         # NOTE: last condition: if we accidentally do a oopsie and increase the norm, we exit immediately and hope everything's okay
-        while (i == 0 or abs(current_norm - previous_norm) > 0.0001 or abs(current_norm - previous_norm) > 0.0001*previous_norm or abs(current_norm - previous_norm) > previous_norm/higher_dim**2) and i < self.iter_max and current_norm <= previous_norm:
+        while (i == 0 or abs(current_norm - previous_norm) > 0.00001 or abs(current_norm - previous_norm) > 0.0001*previous_norm or abs(current_norm - previous_norm) > previous_norm/higher_dim**2) and i < self.iter_max and current_norm <= previous_norm:
             R[:,:] = R[:,:] * (Z@C.T@B.T)[:,:] / (R@B@C@C.T@B.T)[:,:]
             B[:,:] = B[:,:] * (R.T@Z@C.T)[:,:] / (R.T@R@B@C@C.T)[:,:]
             C[:,:] = C[:,:] * (B.T@R.T@Z)[:,:] / (B.T@R.T@R@B@C)[:,:]
             previous_norm = current_norm
             current_norm = np.linalg.norm(R@B@C - Z)
-            if save_history:
+            if self.save_norm_history:
+                self.current_norm_history.append(current_norm)
+            #print(f"{current_norm} {previous_norm}")
+            if self.save_history:
                 self.current_history.append((R.copy(),B.copy(),C.copy()))
             i += 1
         #exit_conditions = self.print_exit_conditions(local_scope=locals().copy()) ## DBG
@@ -121,28 +127,45 @@ class NBVD_coclustering:
 
     #@njit
     def attempt_coclustering_sym(self, S,B,Z):
-        i, previous_norm, current_norm = 0, 0, 0
-        while (i == 0 or abs(current_norm - previous_norm) > 1 or abs(current_norm - previous_norm) > 0.0001*previous_norm) and i < self.iter_max:
+        # NOTE: convergence check helps prevent nan-land
+        i, previous_norm, current_norm = 0, np.inf, np.inf
+        higher_dim, mean = max(Z.shape), Z.mean()
+        if self.save_history:
+            self.current_history = deque()
+            self.current_history.append((S.copy(),B.copy(),S.T.copy()))
+        # NOTE: last condition: if we accidentally do a oopsie and increase the norm, we exit immediately and hope everything's okay
+        while (i == 0 or abs(current_norm - previous_norm) > 0.00001 or abs(current_norm - previous_norm) > 0.0001*previous_norm or abs(current_norm - previous_norm) > previous_norm/higher_dim**2) and i < self.iter_max and current_norm <= previous_norm:
             S[:,:] = S[:,:] * (Z@S@B)[:,:] / (S@B@S.T@S@B)[:,:]
             B[:,:] = B[:,:] * (S.T@Z@S)[:,:] / (S.T@S@B@S.T@S)[:,:]
             previous_norm = current_norm
             current_norm = np.linalg.norm(S@B@S.T - Z)
+            #print(f"{current_norm} {previous_norm}")
+            if self.save_history:
+                self.current_history.append((S.copy(),B.copy(),S.T.copy()))
             i += 1
-        else:
-            self.print_or_log(f"  early stop after {i} iterations")
+        #exit_conditions = self.print_exit_conditions(local_scope=locals().copy()) ## DBG
+        
+        return ((S, B, S.T), current_norm, i)
 
 
-    def do_things(self, Z, rng, verbose=False, save_history=False):
+    def do_things(self, Z, symmetric, rng, verbose=False):
         n, m = Z.shape
         k, l = self.n_row_clusters, self.n_col_clusters
-        attempt_no, best_norm, best_results, best_iter = 0, np.inf, None, 0
+        attempt_no, best_norm, best_results, best_iter, best_sil = 0, np.inf, None, 0, MeanTuple(-np.inf)
 
         while attempt_no < self.n_attempts:
-            R, B, C = rng.random((n,k)), Z.mean() * np.ones((k,l)), rng.random((l,m))
+            if not symmetric:
+                R, B, C = rng.random((n,k)), Z.mean() * np.ones((k,l)), rng.random((l,m))
+            else:
+                S, B = rng.random((n,k)), Z.mean() * np.ones((k,l))
             s = cool_header_thing()
             if verbose:
                 self.print_or_log(f"\n{s}\nAttempt #{attempt_no+1}:\n{s}\n")
-            results, current_norm, iter_stop = self.attempt_coclustering(R,B,C,Z,save_history=save_history)
+            
+            if not symmetric:
+                results, current_norm, iter_stop = self.attempt_coclustering(R,B,C,Z)
+            else:
+                results, current_norm, iter_stop = self.attempt_coclustering_sym(S,B,Z)
             if verbose:
                 if iter_stop < self.iter_max:
                     self.print_or_log(f"  early stop after {iter_stop} iterations")
@@ -153,15 +176,18 @@ class NBVD_coclustering:
             _, row_labels, col_labels = NBVD_coclustering.get_stuff(results[0], results[2])
             sil_row = silhouette_score(Z, row_labels)
             sil_col = silhouette_score(Z.T, col_labels)
+            silhouette = MeanTuple(sil_row, sil_col)
             if verbose:
                 self.print_or_log(f"  Attempt #{attempt_no+1} silhouette:\n\trows: {sil_row:.3f}\n\tcols: {sil_col:.3f}")
 
-            if current_norm < best_norm:
+            if silhouette > best_sil:
                 if verbose:
                     self.print_or_log("__is__ best!")
-                if save_history:
+                if self.save_history:
                     self.best_history = self.current_history
-                best_results, best_norm, best_iter = results, current_norm, iter_stop
+                if self.save_norm_history:
+                    self.norm_history = self.current_norm_history
+                best_results, best_norm, best_iter, best_sil = results, current_norm, iter_stop, silhouette
             attempt_no += 1
         
         # set attributes so we have more info
@@ -197,15 +223,14 @@ class NBVD_coclustering:
 
         # do stuff
         if self.symmetric:
+            k,l = Z.shape
             if k != l: 
                 raise Exception("number of row clusters is different from number of column clusters")
-            S = R
-            NBVD_coclustering.do_things_sym(S, B, Z)
-            self.S, self.B = S, B
-            self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(S, S.T)
-
+            self.S, self.B, _ = self.do_things(Z, symmetric=True, rng=rng, verbose=self.verbose)
+            self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(self.S, self.S.T)
+            self.R, self.C = self.S, self.S.T
         else:
-            self.R, self.B, self.C = self.do_things(Z, rng, verbose=self.verbose, save_history=self.save_history)
+            self.R, self.B, self.C = self.do_things(Z, symmetric=False, rng=rng, verbose=self.verbose)
             self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(self.R, self.C)
 
 
