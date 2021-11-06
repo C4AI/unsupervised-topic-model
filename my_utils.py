@@ -9,7 +9,7 @@ from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
 from sklearn.utils import Bunch
 from dataclasses import dataclass, field
-from typing import Tuple, Iterable
+from typing import Tuple, Iterable, Union
 from queue import PriorityQueue
 from pprint import pprint
 import sys,os,time
@@ -19,7 +19,7 @@ from numba import jit, njit
 from pyqtgraph.Qt import QtCore, QtGui
 #import pyqtgraph.opengl as gl
 import pyqtgraph as pg
-from collections import deque 
+from collections import deque, OrderedDict
 import pandas as pd
 
 from generateSyntheticData_mod import generateSyntheticData
@@ -43,46 +43,44 @@ class MeanTuple:
         template = ", ".join(["{:.3f}" for _ in self.numbers])
         return "(" + template.format(*self.numbers) + ")"
 
-def make_synthetic_datasets (mat_shape, sparsity, synthetic_folder, seed=None, rerun_generate=False, print_info=False):
+def make_synthetic_datasets (mat_shape, noise_prob : float, sparsity : Union[int, list], 
+    synthetic_folder, seed=None, rerun_generate=False, print_info=False) -> OrderedDict :
     """Write datasets to disk (if necessary); optionally print info about datasets 
-    (and if given an int, print the name of the corresponding task).
     
     Returns the loaded datasets.
     """
+    RNG = np.random.default_rng(seed)
 
     def load_dataset (data_dir, filename):
         path = os.path.join(data_dir, filename)
         return np.loadtxt(path, delimiter=';')
 
-    # write datasets to disk (if necessary)
-    synthetic_folder_shape_sparsity = os.path.join(synthetic_folder, f"{mat_shape[0]}-{mat_shape[1]}-{sparsity}")
-    os.makedirs(synthetic_folder_shape_sparsity, exist_ok=True)
-    if rerun_generate or not os.listdir(synthetic_folder_shape_sparsity):
-        print("Generating synthetic datasets ...")
-        # empty folder if not already empty
-        for f in os.listdir(synthetic_folder_shape_sparsity):
-            os.remove(os.path.join(synthetic_folder_shape_sparsity, f))
-        generateSyntheticData(*mat_shape, sparsity, directory=synthetic_folder_shape_sparsity, seed=seed)
+    datasets = OrderedDict()
+    sparsity = sparsity if type(sparsity) == list else [sparsity]
+    for sp in sparsity:
+        # write datasets to disk (if necessary)
+        synthetic_folder_shape_sparsity = os.path.join(synthetic_folder, f"{mat_shape[0]}-{mat_shape[1]}-{sp}")
+        os.makedirs(synthetic_folder_shape_sparsity, exist_ok=True)
+        if rerun_generate or not os.listdir(synthetic_folder_shape_sparsity):
+            print("Generating synthetic datasets ...")
+            # empty folder if not already empty
+            for f in os.listdir(synthetic_folder_shape_sparsity):
+                os.remove(os.path.join(synthetic_folder_shape_sparsity, f))
+            generateSyntheticData(*mat_shape, sp, directory=synthetic_folder_shape_sparsity, seed=seed)
 
-    # load datasets from disk
-    synthetic_data_names = os.listdir(synthetic_folder_shape_sparsity)
-    datasets = []
-    for i,filename in enumerate(synthetic_data_names):
-        dataset = load_dataset(synthetic_folder_shape_sparsity, filename)
-        task_name = filename.replace(".txt", "")
-        if dataset.ndim == 2: # only matrices
-            datasets.append((dataset, task_name))
-    datasets.sort(key = lambda t : t[1]) # sort datasets by task_name
+        # load datasets from disk
+        synthetic_data_names = os.listdir(synthetic_folder_shape_sparsity)
+        for i,filename in enumerate(sorted(synthetic_data_names)):
+            dataset = load_dataset(synthetic_folder_shape_sparsity, filename)
+            task_name = filename.replace(".txt", "")
+            if dataset.ndim == 2 and task_name not in datasets: # only matrices
+                dataset = noisify(dataset, probability=noise_prob, RNG=RNG)
+                datasets[task_name] = dataset
 
     # print info about synthetic tasks
     if print_info:       
         print("Datasets available:")
-        print(*[name for d,name in datasets], sep="\n")
-        if type(print_info) == int:
-            data, task_name = datasets[print_info]
-            s1,s2=cool_header_thing(), cool_header_thing()
-            print(f"""\n{s1}  {''.join(list(reversed(s1)))}\n{s2} {''.join(list(reversed(s2)))}
-            Task: {task_name}\n{s1} {''.join(list(reversed(s1)))}\n{s2}  {''.join(list(reversed(s2)))}""")
+        print(*[name for name in datasets], sep="\n", end="\n\n")
     return datasets
 
 def plot_matrices(matrices : Iterable, names : Iterable, 
@@ -126,12 +124,24 @@ def start_default_rng (seed=None, logger=None):
     return (new_rng, new_seed)
 
 def dump_globals (globals_dict, logger=None):
-    cool_types = {int, tuple, str, bool}
+    cool_types = {int, tuple, str, bool, list}
     banned_keys = {'__name__', '__file__'}
     log_or_print = logger.info if logger else print
     for k, v in globals_dict.items():
         if k not in banned_keys and type(v) in cool_types:
             log_or_print(f"{k:^15}:\t\t{v}")
+
+def noisify (sparse_matrix, probability, RNG=None):
+    """Noisifies matrix in-place and returns it."""
+    RNG = RNG or np.random.default_rng()
+    flat_length = sparse_matrix.shape[0] * sparse_matrix.shape[1]
+    min_val, max_val = sparse_matrix.min(), sparse_matrix.max()
+
+    np.place(sparse_matrix, 
+        sparse_matrix == 0, 
+        (RNG.random(size=(flat_length,)) < probability) * RNG.uniform(min_val, max_val, size=(flat_length,))
+    )
+    return sparse_matrix
 
 def cool_header_thing ():
     print_rng = default_rng()

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Tuple
 from queue import PriorityQueue
 from pprint import pprint
-import sys,os,time
+import sys,os,time,re
 import logging
 from datetime import datetime
 #from numba import jit, njit
@@ -26,20 +26,21 @@ from nbvd import NBVD_coclustering
 wbkm = __import__("wbkm numpy debugging land")
 
 RNG_SEED=996535595 # seed for reproducibility
-N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
+N_ROW_CLUSTERS, N_COL_CLUSTERS = 2,2 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
-SPARSITY = 50 # (Tasks 2,3) fill x % of matrix with zeroes
+SPARSITY = 30 # (Tasks 2,3) fill x % of matrix with zeroes
+NOISE = 0 # (Tasks 2,3) fill x % of matrix with zeroes
 
-ALG = 'nbvd' # (Task != 3) clustering algorithm
-ATTEMPTS_MAX = 10 # (NBVD, WBKM) maximum attempts
+ALG = 'wbkm' # (Task != 3) clustering algorithm
+ATTEMPTS_MAX = 15 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
-TASK = 3 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
+TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
 MOVIE = False # (NBVD) display movie showing clustering iterations
-DATASET_NO = 4 # (Task 2) chosen dataset
+DATASET_NAME = "A-" # (Task 2) chosen dataset (regex expression)
 WAIT_TIME = 4 # (Task 3) wait time between tasks
-SHOW_IMAGES = False # (Task 3) display matrices
+SHOW_IMAGES = True # (Task 3) display matrices
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
 SYNTHETIC_FOLDER = 'synthetic/DataSets' # (Task 3) directory where synthetic datasets are stored
 LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and results sheet
@@ -73,6 +74,7 @@ def file_handler_add(logger : logging.Logger, name : str, replace=True, level=lo
         logger.removeHandler(logger.handlers[-1])
     logger.addHandler(fh)
 
+#TODO: add task name param and to original dataset
 def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=ATTEMPTS_MAX, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None):
     RNG = np.random.default_rng(RNG_SEED)
@@ -234,7 +236,6 @@ def main():
     RNG, RNG_SEED = start_default_rng(seed=RNG_SEED)
     np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
-
     # prepare data
     if TASK==0:
         data, rows, columns = make_biclusters(
@@ -246,18 +247,25 @@ def main():
     elif TASK==1:
         data = random_block_matrix(*MAT_SHAPE, n_row_clusters=N_ROW_CLUSTERS, n_col_clusters=N_COL_CLUSTERS, seed=RNG_SEED)
     elif TASK==2 or TASK==3:
-        # generate synthetic datasets fi necessary
-        datasets = make_synthetic_datasets(MAT_SHAPE, SPARSITY, SYNTHETIC_FOLDER, 
-            seed=RNG_SEED, rerun_generate=RERUN_GENERATE, print_info=(TASK==2)*DATASET_NO)
+        # generate synthetic datasets if necessary
+        datasets = make_synthetic_datasets(MAT_SHAPE, NOISE/100, SPARSITY, SYNTHETIC_FOLDER, 
+            seed=RNG_SEED, rerun_generate=RERUN_GENERATE, print_info=(TASK==2))
         if TASK == 2:
-            data, task_name = datasets[DATASET_NO]
+            for name in datasets:
+                if re.search(DATASET_NAME, name):
+                    task_name = name
+                    data = datasets[name]
+                    break # stop at first match
 
     # do the actual task
     if TASK == 0:
         do_task_single(data, true_labels=(rows, columns), RNG_SEED=RNG_SEED)
     elif TASK == 1 or TASK == 2:
-        alg=ALG
-        do_task_single(data, alg=alg, RNG_SEED=RNG_SEED)
+        if TASK == 2:
+            s1,s2=cool_header_thing(), cool_header_thing()
+            print(f"""{s1}  {''.join(list(reversed(s1)))}\n{s2} {''.join(list(reversed(s2)))}
+            Task: {task_name}\n{s1} {''.join(list(reversed(s1)))}\n{s2}  {''.join(list(reversed(s2)))}""")
+        do_task_single(data, alg=ALG, RNG_SEED=RNG_SEED)
     elif TASK == 3:
         n_attempts = ATTEMPTS_MAX
         alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans']

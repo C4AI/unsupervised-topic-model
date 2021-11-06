@@ -21,7 +21,7 @@ import logging
 
 from my_utils import cool_header_thing, start_default_rng, mat_debug, count_zero_columns
 
-# NOTE: maybe useful? https://stackoverflow.com/questions/33576293/creating-this-block-matrix-in-numpy
+# TODO: fix first exit condition
 
 ITER_MAX = 2000 #2000
 ATTEMPTS_MAX = 5
@@ -106,7 +106,7 @@ class NBVD_coclustering:
             self.current_history = deque()
             self.current_history.append((R.copy(),B.copy(),C.copy()))
         # NOTE: last condition: if we accidentally do a oopsie and increase the norm, we exit immediately and hope everything's okay
-        while (i == 0 or abs(current_norm - previous_norm) > 0.0001*mean or abs(current_norm - previous_norm) > 0.0001*previous_norm or abs(current_norm - previous_norm) > previous_norm/higher_dim**2) and i < self.iter_max and current_norm <= previous_norm:
+        while (i == 0 or abs(current_norm - previous_norm) > 0.0001 or abs(current_norm - previous_norm) > 0.0001*previous_norm or abs(current_norm - previous_norm) > previous_norm/higher_dim**2) and i < self.iter_max and current_norm <= previous_norm:
             R[:,:] = R[:,:] * (Z@C.T@B.T)[:,:] / (R@B@C@C.T@B.T)[:,:]
             B[:,:] = B[:,:] * (R.T@Z@C.T)[:,:] / (R.T@R@B@C@C.T)[:,:]
             C[:,:] = C[:,:] * (B.T@R.T@Z)[:,:] / (B.T@R.T@R@B@C)[:,:]
@@ -115,7 +115,7 @@ class NBVD_coclustering:
             if save_history:
                 self.current_history.append((R.copy(),B.copy(),C.copy()))
             i += 1
-        exit_conditions = self.print_exit_conditions(local_scope=locals().copy()) ## DBG
+        #exit_conditions = self.print_exit_conditions(local_scope=locals().copy()) ## DBG
         
         return ((R, B, C), current_norm, i)
 
