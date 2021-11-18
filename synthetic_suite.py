@@ -8,6 +8,7 @@ from sklearn.datasets import make_biclusters, make_blobs
 from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
 from sklearn.utils import  Bunch
+from sklearn.decomposition import *
 from dataclasses import dataclass, field
 from typing import Tuple
 from queue import PriorityQueue
@@ -16,9 +17,11 @@ import sys,os,time,re
 import logging
 from datetime import datetime
 #from numba import jit, njit
-from collections import deque 
+from collections import deque, Counter
 import pandas as pd
 
+#TODO: nbvd centroids (properly)
+#TODO: vary k,l select best
 #TODO: images for nbvd, wbkm
 
 from my_utils import *
@@ -26,14 +29,15 @@ from nbvd import NBVD_coclustering
 wbkm = __import__("wbkm numpy debugging land")
 import algorithms
 
-RNG_SEED=996535595 # seed for reproducibility
+RNG_SEED=996535594 # seed for reproducibility
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
-SPARSITY = 50 # (Tasks 2,3) fill x % of matrix with zeroes
+SPARSITY = 0 # (Tasks 2,3) fill x % of matrix with zeroes
 NOISE = 0 # (Tasks 2,3) fill x % of matrix with nasty noise
 
 ALG = 'nbvd' # (Task != 3) clustering algorithm
-ATTEMPTS_MAX = 7 # (NBVD, WBKM) maximum attempts
+LABEL_CHECK = True
+ATTEMPTS_MAX = 3 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
@@ -114,7 +118,7 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         row_model = KMeans(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
         row_model.fit(data)
         model.row_labels_ = row_model.labels_
-        col_model = KMeans(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
+        col_model = KMeans(n_clusters=N_COL_CLUSTERS, random_state=RNG_SEED)
         col_model.fit(data.T)
         model.column_labels_ = col_model.labels_
     elif ALG == 'nbvd_waldyr':
@@ -158,7 +162,44 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         logger.info(f"columns:\n  ARI= {ari:.3f}\n  AMI= {ami:.3f}\n  VMs= {vmeasure:.3f}\n")
 
     # internal indices
+    #print("not fancy:")
+    if LABEL_CHECK:
+        _, row1, col1 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="not fancy")
+        #_, row2, col2 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="fancy")
+        _, row3, col3 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids")
+
+        print("not fancy")
+        silhouette2 = print_silhouette_score(data, row1, col1, logger=logger)
+        print("fancy")
+        #silhouette2 = print_silhouette_score(data, row2, col2, logger=logger)
+        print("centroids")
+        silhouette3 = print_silhouette_score(data, row3, col3, logger=logger)
+        print("rows:")
+        thing = lambda arr : sorted(Counter(arr).items())
+        print(thing(row1), 
+            #thing(row2),
+            thing(row3), sep="\n")
+        print(row1)
+        #print(row2)
+        print(row3)
+        print("cols:")
+        print(thing(col1), 
+            #thing(col2), 
+            thing(col3), sep="\n")
+        row_centroids, col_centroids = model.centroids[0], model.centroids[1]
+        _, k = row_centroids.shape
+        _, l = col_centroids.shape
+        row_points = np.vstack([data, row_centroids.T])
+        col_points = np.vstack([data.T, col_centroids.T])
+        pca_row = PCA(n_components=2)
+        reduced_row_points = pca_row.fit_transform(row_points)
+        #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
+        #print("reduced_row_points:", reduced_row_points.shape)
+        ax, fig = plt.subplots()
+        fig.scatter(reduced_row_points[:-k , 0], reduced_row_points[:-k , 1], color="blue")
+        fig.scatter(reduced_row_points[-k: , 0], reduced_row_points[-k: , 1], color="red", s=200)
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
+
 
     # matplotlib
     if show_images:
@@ -173,7 +214,8 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
             names = ["Original dataset", "Reconstructed matrix USV.T", "Block value matrix S"]
         if hasattr(model, "norm_history"):
             y = model.norm_history
-            plt.plot(range(len(y)), y)
+            ax, fig = plt.subplots()
+            fig.plot(range(len(y)), y)
         plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
     if SHUFFLE_TEST:
         # rearranged data

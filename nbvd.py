@@ -18,6 +18,7 @@ from pyqtgraph.Qt import QtCore, QtGui
 import pyqtgraph as pg
 from collections import deque
 import logging
+from typing import Tuple
 
 from my_utils import *
 
@@ -61,7 +62,8 @@ class NBVD_coclustering:
     C: np.ndarray = field(init=False)
     S: np.ndarray = field(init=False)
     best_norm: int = field(init=False)
-    best_iter: int = field(init=False)
+    best_norm: int = field(init=False)
+    centroids: Tuple[np.ndarray] = field(init=False)
 
     def print_or_log(self, s):
         # NOTE: logging might break if there's an exception while logging
@@ -173,7 +175,7 @@ class NBVD_coclustering:
 
             ## silhouette for paranoia
             # NOTE: best norm =/> best silhouette but it shouldnt be too different, right?
-            _, row_labels, col_labels = NBVD_coclustering.get_stuff(results[0], results[2])
+            _, row_labels, col_labels = NBVD_coclustering.get_stuff(results[0], results[2], B=results[1], method="not fancy")
             sil_row = silhouette_score(Z, row_labels)
             sil_col = silhouette_score(Z.T, col_labels)
             silhouette = MeanTuple(sil_row, sil_col)
@@ -194,13 +196,71 @@ class NBVD_coclustering:
         self.best_norm, self.best_iter = best_norm, best_iter
         return best_results
 
-    def get_stuff (R, C):
+    def get_centroids (self):
+        ## R = (n,k)
+        ## B = (k,l)
+        ## C = (l,m)
+        ## RB = (n,l) l centroides de colunas (vetores-base p espaco de colunas de Z)
+        ## (BC).T = (m,k) k centroides de linhas (vetores-base p espaco de linhas de Z)
+        col_centroids = self.R @ self.B
+        row_centroids = (self.B @ self.C).T
+        return (row_centroids, col_centroids)
+
+    def get_stuff (R, C, B=None, Z=None, centroids=None, method="centroids"):
         """Get bicluster boolean matrix, row labels and column labels from row-coefficient and
         column-coefficient matrices (R and C, respectively)."""
+
         n, k = R.shape
         l, m = C.shape
-        row = np.argmax(R, axis=1)
-        col = np.argmax(C, axis=0)
+        if method == "not fancy":
+            row = np.argmax(R, axis=1)
+            col = np.argmax(C, axis=0)
+        elif method == "fancy":
+            U = R.copy()
+            V = C.T.copy()
+            diag = lambda M : np.diag(np.diag(M))
+            Du = diag(np.ones(U.shape).T @ U)
+            Dv = diag(np.ones(V.shape).T @ V)
+
+            U = U @ diag(B @ Dv @ np.ones(Dv.shape))
+            V = V @ diag(np.ones(Du.shape).T @ Du @ B)
+            row = np.argmax(U, axis=1) # NOTE: U is associated with rows; V is associated with columns
+            col = np.argmax(V, axis=1)
+        elif method == "centroids":
+            row_centroids, col_centroids = centroids
+            m, k = row_centroids.shape
+            n, l = col_centroids.shape
+            
+
+            ###row_distances = norm(Z.T-row_centroids)
+            """ works i think
+            Amod = A.reshape(5,3,1).repeat(3, axis=2)
+            cmod=c.reshape(3,3,1).T.repeat(5,axis=0) # add extra dim ,transpose and repeat
+            row_distances = norm(Zmod-cmod,axis=1)
+            """
+            """ old col
+            Z_col_extra = Z.T.reshape(*Z.T.shape, 1).repeat(l, axis=2) # add extra dim for clusters
+            #c_col_extra = col_centroids.reshape(n, l, 1).T.repeat(n, axis=0) # add extra dim for number of samples
+            c_col_extra = col_centroids.reshape(n, 1, l).repeat(n, axis=1) # add extra dim for number of samples
+            col_distances = norm(Z_col_extra-c_col_extra, axis=1)
+            col = np.argmin(col_distances, axis=1)
+            """
+            Z_row_extra = Z.reshape(*Z.shape, 1).repeat(k, axis=2) # add extra dim for clusters
+            #c_row_extra = row_centroids.reshape(m, k, 1).T.repeat(m, axis=0) # add extra dim for number of samples
+            #c_row_extra = row_centroids.reshape(m, 1, k).repeat(m, axis=1) # add extra dim for number of samples
+            c_row_extra = row_centroids.T.reshape(k, m, 1).repeat(m, axis=2).T # add extra dim for number of samples
+            row_distances = norm(Z_row_extra-c_row_extra, axis=1)
+            row = np.argmin(row_distances, axis=1)
+            print("row_distances", row_distances.shape)
+            print("row", row.shape)
+            
+            Z_col_extra = Z.T.reshape(*Z.T.shape, 1).repeat(l, axis=2) # add extra dim for clusters
+            #c_col_extra = col_centroids.reshape(n, l, 1).T.repeat(n, axis=0) # add extra dim for number of samples
+            c_col_extra = col_centroids.T.reshape(l, n, 1).repeat(n, axis=2).T # add extra dim for number of samples
+            col_distances = norm(Z_col_extra-c_col_extra, axis=1)
+            col = np.argmin(col_distances, axis=1)
+            print("col_distances", col_distances.shape)
+            print("col", col.shape)
 
         zeros_row = np.zeros((n,k))
         _, j_idx = np.mgrid[slice(zeros_row.shape[0]), slice(zeros_row.shape[1])] # prefer anything over for loop
@@ -219,7 +279,8 @@ class NBVD_coclustering:
     def __post_init__(self):
         # initialization
         rng = np.random.default_rng(seed=self.random_state)
-        Z = np.array(self.data)
+        self.data = np.array(self.data)
+        Z = self.data
 
         # do stuff
         if self.symmetric:
@@ -231,7 +292,8 @@ class NBVD_coclustering:
             self.R, self.C = self.S, self.S.T
         else:
             self.R, self.B, self.C = self.do_things(Z, symmetric=False, rng=rng, verbose=self.verbose)
-            self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(self.R, self.C)
+            self.centroids = self.get_centroids()
+            self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(self.R, self.C, self.B, self.data, self.centroids)
 
 
         """ # warn about using symmetric instead
