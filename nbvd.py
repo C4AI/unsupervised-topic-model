@@ -105,20 +105,19 @@ class NBVD_coclustering:
         # NOTE: convergence check helps prevent nan-land
         i, previous_norm, current_norm = 0, np.inf, np.inf
         higher_dim, mean = max(Z.shape), Z.mean()
+        self.current_norm_history = []
         if self.save_history:
             self.current_history = deque()
             self.current_history.append((R.copy(),B.copy(),C.copy()))
-        if self.save_norm_history:
-            self.current_norm_history = []
-        # NOTE: last condition: if we accidentally do a oopsie and increase the norm, we exit immediately and hope everything's okay
-        while (i == 0 or abs(current_norm - previous_norm) > 0.00001 or abs(current_norm - previous_norm) > 0.0001*previous_norm or abs(current_norm - previous_norm) > previous_norm/higher_dim**2) and i < self.iter_max and current_norm <= previous_norm:
+
+        #while (i == 0 or abs(current_norm - previous_norm) > 0.00001 or abs(current_norm - previous_norm) > 0.0001*previous_norm or abs(current_norm - previous_norm) > previous_norm/higher_dim**2) and i < self.iter_max and current_norm <= previous_norm:
+        while i == 0 or (i < self.iter_max and current_norm <= previous_norm):
             R[:,:] = R[:,:] * (Z@C.T@B.T)[:,:] / (R@B@C@C.T@B.T)[:,:]
             B[:,:] = B[:,:] * (R.T@Z@C.T)[:,:] / (R.T@R@B@C@C.T)[:,:]
             C[:,:] = C[:,:] * (B.T@R.T@Z)[:,:] / (B.T@R.T@R@B@C)[:,:]
             previous_norm = current_norm
             current_norm = np.linalg.norm(R@B@C - Z)
-            if self.save_norm_history:
-                self.current_norm_history.append(current_norm)
+            self.current_norm_history.append(current_norm)
             #print(f"{current_norm} {previous_norm}")
             if self.save_history:
                 self.current_history.append((R.copy(),B.copy(),C.copy()))
@@ -245,22 +244,32 @@ class NBVD_coclustering:
             col_distances = norm(Z_col_extra-c_col_extra, axis=1)
             col = np.argmin(col_distances, axis=1)
             """
+
             Z_row_extra = Z.reshape(*Z.shape, 1).repeat(k, axis=2) # add extra dim for clusters
             #c_row_extra = row_centroids.reshape(m, k, 1).T.repeat(m, axis=0) # add extra dim for number of samples
             #c_row_extra = row_centroids.reshape(m, 1, k).repeat(m, axis=1) # add extra dim for number of samples
             c_row_extra = row_centroids.T.reshape(k, m, 1).repeat(m, axis=2).T # add extra dim for number of samples
             row_distances = norm(Z_row_extra-c_row_extra, axis=1)
             row = np.argmin(row_distances, axis=1)
-            print("row_distances", row_distances.shape)
-            print("row", row.shape)
             
             Z_col_extra = Z.T.reshape(*Z.T.shape, 1).repeat(l, axis=2) # add extra dim for clusters
             #c_col_extra = col_centroids.reshape(n, l, 1).T.repeat(n, axis=0) # add extra dim for number of samples
             c_col_extra = col_centroids.T.reshape(l, n, 1).repeat(n, axis=2).T # add extra dim for number of samples
             col_distances = norm(Z_col_extra-c_col_extra, axis=1)
             col = np.argmin(col_distances, axis=1)
-            print("col_distances", col_distances.shape)
-            print("col", col.shape)
+
+        elif method == "centroids2":
+            row_centroids, col_centroids = centroids
+            m, k = row_centroids.shape
+            n, l = col_centroids.shape
+            
+            row, col = np.zeros((n,), dtype="int64"), np.zeros((m,), dtype="int64")
+            for i, r in enumerate(Z):
+                distances = [norm(r-centroid) for centroid in row_centroids.T]
+                row[i] = np.argmin(distances)
+            for i, c in enumerate(Z.T):
+                distances = [norm(c-centroid) for centroid in col_centroids.T]
+                col[i] = np.argmin(distances)
 
         zeros_row = np.zeros((n,k))
         _, j_idx = np.mgrid[slice(zeros_row.shape[0]), slice(zeros_row.shape[1])] # prefer anything over for loop

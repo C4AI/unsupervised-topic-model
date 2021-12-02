@@ -143,6 +143,25 @@ def noisify (sparse_matrix, probability, RNG=None):
     )
     return sparse_matrix
 
+def get_difs (a, window):
+    
+    new, difs = a.copy(), a.copy()
+    n = len(a)
+    extra = window%2
+    for i,v in enumerate(a[:-1]):
+        difs[i] = a[i+1] - a[i]
+    difs[n-1] = difs[n-2]
+
+    for i, v in enumerate(a):
+        if i < window//2 or i > n - window//2:
+            continue
+        new[i] = sum(difs[i-window//2 : i+window//2+extra]) / window
+    for i in range(window//2):
+        new[i] = new[window//2]
+        new[n-i-1] = new[n-window//2]
+    return new
+        
+
 def cool_header_thing ():
     print_rng = default_rng()
     n1 = print_rng.integers(low=14, high=21)

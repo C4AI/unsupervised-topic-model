@@ -4,11 +4,13 @@ import numpy as np
 from numpy.linalg import inv, norm
 from numpy.random import default_rng
 from matplotlib import pyplot as plt
+import matplotlib.colors as mcolors
 from sklearn.datasets import make_biclusters, make_blobs
 from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
 from sklearn.utils import  Bunch
 from sklearn.decomposition import *
+from sklearn.preprocessing import *
 from dataclasses import dataclass, field
 from typing import Tuple
 from queue import PriorityQueue
@@ -30,14 +32,14 @@ wbkm = __import__("wbkm numpy debugging land")
 import algorithms
 
 RNG_SEED=996535594 # seed for reproducibility
-N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
+N_ROW_CLUSTERS, N_COL_CLUSTERS = 5,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
 SPARSITY = 0 # (Tasks 2,3) fill x % of matrix with zeroes
 NOISE = 0 # (Tasks 2,3) fill x % of matrix with nasty noise
 
 ALG = 'nbvd' # (Task != 3) clustering algorithm
 LABEL_CHECK = True
-ATTEMPTS_MAX = 3 # (NBVD, WBKM) maximum attempts
+ATTEMPTS_MAX = 1 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
@@ -167,6 +169,7 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         _, row1, col1 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="not fancy")
         #_, row2, col2 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="fancy")
         _, row3, col3 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids")
+        _, row4, col4 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids2")
 
         print("not fancy")
         silhouette2 = print_silhouette_score(data, row1, col1, logger=logger)
@@ -174,30 +177,56 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         #silhouette2 = print_silhouette_score(data, row2, col2, logger=logger)
         print("centroids")
         silhouette3 = print_silhouette_score(data, row3, col3, logger=logger)
+        print("ceeentroids2")
+        silhouette4 = print_silhouette_score(data, row3, col3, logger=logger)
         print("rows:")
         thing = lambda arr : sorted(Counter(arr).items())
         print(thing(row1), 
             #thing(row2),
-            thing(row3), sep="\n")
+            thing(row3), thing(row4), sep="\n")
         print(row1)
         #print(row2)
         print(row3)
+        print(row4)
         print("cols:")
         print(thing(col1), 
             #thing(col2), 
-            thing(col3), sep="\n")
+            thing(col3), thing(col4), sep="\n")
+
+        # centroid stuff
+        def __centroid_scatter_plot (samples, centroids, labels, type):
+            _, n = centroids.shape
+            if type == "row":
+                points = normalize(np.vstack([samples, centroids.T]), axis=1)
+                title = "Row centroids"
+            elif type == "col":
+                points = normalize(np.vstack([samples, centroids.T]), axis=1)
+                title = "Column centroids"
+            pca = PCA(n_components=2)
+            #pca = TruncatedSVD(n_components=2)
+            #pca = KernelPCA(n_components=2)
+            reduced_points = pca.fit_transform(points)
+            #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
+            #print("reduced_points:", reduced_points.shape)
+            palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+            colors = [palette[label] for label in labels]
+
+
+            ax, fig = plt.subplots()
+            # plot centroids in a way that allows us to label them
+            things = []
+            for i in range(n):
+                # note: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
+                thing = fig.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=200, alpha=0.8)
+                things.append(thing)
+            fig.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
+            fig.legend(things, list(range(n)))
+            plt.title(title)
         row_centroids, col_centroids = model.centroids[0], model.centroids[1]
-        _, k = row_centroids.shape
-        _, l = col_centroids.shape
-        row_points = np.vstack([data, row_centroids.T])
-        col_points = np.vstack([data.T, col_centroids.T])
-        pca_row = PCA(n_components=2)
-        reduced_row_points = pca_row.fit_transform(row_points)
-        #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
-        #print("reduced_row_points:", reduced_row_points.shape)
-        ax, fig = plt.subplots()
-        fig.scatter(reduced_row_points[:-k , 0], reduced_row_points[:-k , 1], color="blue")
-        fig.scatter(reduced_row_points[-k: , 0], reduced_row_points[-k: , 1], color="red", s=200)
+        __centroid_scatter_plot(data, row_centroids, model.row_labels_, "row")
+        __centroid_scatter_plot(data.T, col_centroids, model.column_labels_, "col")
+
+
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
 
@@ -216,7 +245,19 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
             y = model.norm_history
             ax, fig = plt.subplots()
             fig.plot(range(len(y)), y)
+            vel = get_difs(y, 10)
+            acc = get_difs(vel, 5)
+
+            acc = np.array(acc)
+            #args = np.arange(len(acc))[acc > acc.mean()]
+            #fig.vlines(args, ymin=min(y)-2*abs(min(y)), ymax=max(y)+abs(max(y)), color="black", alpha=0.2)
+            #print(args)
+            for i,val in enumerate(acc):
+                if val > sum(acc)/len(acc):
+                    fig.axvline(i, color="black", alpha=0.1)
+
         plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
+    
     if SHUFFLE_TEST:
         # rearranged data
         fit_data = data[np.argsort(model.row_labels_)]
