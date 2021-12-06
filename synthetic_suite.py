@@ -5,6 +5,7 @@ from numpy.linalg import inv, norm
 from numpy.random import default_rng
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
 from sklearn.datasets import make_biclusters, make_blobs
 from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
@@ -31,20 +32,20 @@ from nbvd import NBVD_coclustering
 wbkm = __import__("wbkm numpy debugging land")
 import algorithms
 
-RNG_SEED=996535594 # seed for reproducibility
-N_ROW_CLUSTERS, N_COL_CLUSTERS = 5,3 # number of row, column clusters
+RNG_SEED=996535594000 # seed for reproducibility
+N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
 SPARSITY = 0 # (Tasks 2,3) fill x % of matrix with zeroes
 NOISE = 0 # (Tasks 2,3) fill x % of matrix with nasty noise
 
 ALG = 'nbvd' # (Task != 3) clustering algorithm
 LABEL_CHECK = True
-ATTEMPTS_MAX = 1 # (NBVD, WBKM) maximum attempts
+ATTEMPTS_MAX = 2 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
-DATASET_NAME = "E-" # (Task 2) chosen dataset (regex expression)
+DATASET_NAME = "C-CoMatrix-600-600" # (Task 2) chosen dataset (regex expression)
 MOVIE = False # (NBVD) display movie showing clustering iterations
 NORM_PLOT = True # (NBVD) display norm plot
 WAIT_TIME = 4 # (Task 3) wait time between tasks
@@ -82,7 +83,33 @@ def file_handler_add(logger : logging.Logger, name : str, replace=True, level=lo
         logger.removeHandler(logger.handlers[-1])
     logger.addHandler(fh)
 
-#TODO: add task name param and to original dataset
+def shaded_label_matrix (data, labels, type, method_name=None, RNG=None):
+    RNG = RNG or np.random.default_rng()
+    fig, ax = plt.subplots()
+    ax.matshow(data, cmap=plt.cm.Blues)
+
+    # colors for shading
+    n = 1+max(labels)
+    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+    colors = [palette[label] for label in labels]
+    legend_dict = {}
+    xs = np.arange(data.shape[1])
+    for i, row in enumerate(data):
+        if type == "rows":
+            ax.fill_between(xs, i, i+1, color=colors[i], alpha=0.09)
+        else:
+            ys = np.arange(data.shape[0])
+            ax.fill_betweenx(ys, i, i+1, color=colors[i], alpha=0.09)
+        
+        # for legends
+        if labels[i] not in legend_dict:
+            legend_artist = mpatches.Patch(color=colors[i], label=labels[i])
+            legend_dict[labels[i]] = legend_artist
+
+    plt.title(f"Shaded dataset: {method_name if method_name else ''}")
+    labels, handles = list(zip(*legend_dict.items()))
+    plt.legend(handles, labels)
+
 def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=ATTEMPTS_MAX, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None):
     RNG = np.random.default_rng(RNG_SEED)
@@ -131,7 +158,7 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         print("resNEW, itr:", resNEW, itr) # resNEW is norm squared; itr is iteration_no
     
     if MOVIE and alg == 'nbvd':
-        pyqtgraph_thing(data, model)
+        pyqtgraph_thing(data, model, 25)
 
     #########################
     # evaluate results 
@@ -169,29 +196,25 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         _, row1, col1 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="not fancy")
         #_, row2, col2 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="fancy")
         _, row3, col3 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids")
-        _, row4, col4 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids2")
 
         print("not fancy")
         silhouette2 = print_silhouette_score(data, row1, col1, logger=logger)
-        print("fancy")
+        #print("fancy")
         #silhouette2 = print_silhouette_score(data, row2, col2, logger=logger)
         print("centroids")
         silhouette3 = print_silhouette_score(data, row3, col3, logger=logger)
-        print("ceeentroids2")
-        silhouette4 = print_silhouette_score(data, row3, col3, logger=logger)
         print("rows:")
         thing = lambda arr : sorted(Counter(arr).items())
         print(thing(row1), 
             #thing(row2),
-            thing(row3), thing(row4), sep="\n")
+            thing(row3), sep="\n")
         print(row1)
         #print(row2)
         print(row3)
-        print(row4)
         print("cols:")
         print(thing(col1), 
             #thing(col2), 
-            thing(col3), thing(col4), sep="\n")
+            thing(col3), sep="\n")
 
         # centroid stuff
         def __centroid_scatter_plot (samples, centroids, labels, type):
@@ -212,20 +235,23 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
             colors = [palette[label] for label in labels]
 
 
-            ax, fig = plt.subplots()
+            fig, ax = plt.subplots()
             # plot centroids in a way that allows us to label them
             things = []
             for i in range(n):
                 # note: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
-                thing = fig.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=200, alpha=0.8)
+                thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=200, alpha=0.8)
                 things.append(thing)
-            fig.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
-            fig.legend(things, list(range(n)))
+            ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
+            ax.legend(things, list(range(n)))
             plt.title(title)
         row_centroids, col_centroids = model.centroids[0], model.centroids[1]
         __centroid_scatter_plot(data, row_centroids, model.row_labels_, "row")
         __centroid_scatter_plot(data.T, col_centroids, model.column_labels_, "col")
 
+        # shade original dataset
+        shaded_label_matrix(data, model.row_labels_, type="rows",method_name="", RNG=RNG)
+        shaded_label_matrix(data, model.column_labels_, type="columns",method_name="", RNG=RNG)
 
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
@@ -233,8 +259,8 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
     # matplotlib
     if show_images:
         if alg == 'nbvd':
-            to_plot = [data, model.R@model.B@model.C, model.B]
-            names = ["Original dataset", "Reconstructed matrix RBC", "Block value matrix B"]
+            to_plot = [data, model.R@model.B@model.C]
+            names = ["Original dataset", "Reconstructed matrix RBC"]
         elif alg == 'wbkm':
             to_plot = [data, model.D1@model.P@model.S@model.Q.T@model.D2, model.P@model.S@model.Q.T]
             names = ["Original dataset", "Reconstructed matrix...?", "Matrix that looks funny sometimes"]
@@ -243,18 +269,20 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
             names = ["Original dataset", "Reconstructed matrix USV.T", "Block value matrix S"]
         if hasattr(model, "norm_history"):
             y = model.norm_history
-            ax, fig = plt.subplots()
-            fig.plot(range(len(y)), y)
+            fig, ax = plt.subplots()
+            ax.plot(range(len(y)), y)
             vel = get_difs(y, 10)
             acc = get_difs(vel, 5)
 
             acc = np.array(acc)
+            # TODO: test if ok
             #args = np.arange(len(acc))[acc > acc.mean()]
             #fig.vlines(args, ymin=min(y)-2*abs(min(y)), ymax=max(y)+abs(max(y)), color="black", alpha=0.2)
             #print(args)
             for i,val in enumerate(acc):
                 if val > sum(acc)/len(acc):
-                    fig.axvline(i, color="black", alpha=0.1)
+                    ax.axvline(i, color="black", alpha=0.1)
+            plt.title("Norm history")
 
         plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
     

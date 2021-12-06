@@ -32,10 +32,10 @@ N_ROW_CLUSTERS, N_COL_CLUSTERS = 4,4
 RNG_SEED=42
 VECTORIZATION='w2v'
 W2V_DIM=100
-ALG='wbkm'
+ALG='nbvd'
 ATTEMPTS_MAX=10
 rerun_embedding=True
-MOVIE=False
+MOVIE=True
 
 ############################################################################## 
 # to use a set number of cpus: 
@@ -223,7 +223,7 @@ def main():
     # pyqtgraph
     #####################################################
     if MOVIE and ALG == 'nbvd':
-        pyqtgraph_thing (data, model)
+        pyqtgraph_thing (data, model, 25)
 
 if __name__ == "__main__":
     main()

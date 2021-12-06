@@ -303,12 +303,12 @@ def update_display(history : deque, display, anchor):
         if anchor.i == 0: # stop for a bit at the final one
             anchor.timer = len(history)//3
 
-def pyqtgraph_thing (data, model):
+def pyqtgraph_thing (data, model, ms_period):
     app, win, im, anchor = init_qt_graphics(data)
     my_update = lambda : update_display(model.best_history, im, anchor)
     time = QtCore.QTimer()
     time.timeout.connect(my_update)
-    time.start(50)
+    time.start(ms_period)
     win.show()
     app.exec_() # start qt app
 

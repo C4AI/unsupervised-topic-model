@@ -23,6 +23,7 @@ from typing import Tuple
 from my_utils import *
 
 # TODO: fix first exit condition
+# TODO: decide which labeling thing to use
 
 ITER_MAX = 2000 #2000
 ATTEMPTS_MAX = 5
@@ -248,28 +249,29 @@ class NBVD_coclustering:
             Z_row_extra = Z.reshape(*Z.shape, 1).repeat(k, axis=2) # add extra dim for clusters
             #c_row_extra = row_centroids.reshape(m, k, 1).T.repeat(m, axis=0) # add extra dim for number of samples
             #c_row_extra = row_centroids.reshape(m, 1, k).repeat(m, axis=1) # add extra dim for number of samples
-            c_row_extra = row_centroids.T.reshape(k, m, 1).repeat(m, axis=2).T # add extra dim for number of samples
+            
+            # NOTE: i swapped '.repeat(m' for '.repeat(n
+            c_row_extra = row_centroids.T.reshape(k, m, 1).repeat(n, axis=2).T # add extra dim for number of samples
             row_distances = norm(Z_row_extra-c_row_extra, axis=1)
             row = np.argmin(row_distances, axis=1)
             
             Z_col_extra = Z.T.reshape(*Z.T.shape, 1).repeat(l, axis=2) # add extra dim for clusters
             #c_col_extra = col_centroids.reshape(n, l, 1).T.repeat(n, axis=0) # add extra dim for number of samples
-            c_col_extra = col_centroids.T.reshape(l, n, 1).repeat(n, axis=2).T # add extra dim for number of samples
+            # NOTE: i swapped '.repeat(n' for '.repeat(m
+            c_col_extra = col_centroids.T.reshape(l, n, 1).repeat(m, axis=2).T # add extra dim for number of samples
             col_distances = norm(Z_col_extra-c_col_extra, axis=1)
             col = np.argmin(col_distances, axis=1)
 
-        elif method == "centroids2":
-            row_centroids, col_centroids = centroids
-            m, k = row_centroids.shape
-            n, l = col_centroids.shape
-            
-            row, col = np.zeros((n,), dtype="int64"), np.zeros((m,), dtype="int64")
+            # sanity check
+            row2, col2 = np.zeros((n,), dtype="int64"), np.zeros((m,), dtype="int64")
             for i, r in enumerate(Z):
                 distances = [norm(r-centroid) for centroid in row_centroids.T]
-                row[i] = np.argmin(distances)
+                row2[i] = np.argmin(distances)
             for i, c in enumerate(Z.T):
                 distances = [norm(c-centroid) for centroid in col_centroids.T]
-                col[i] = np.argmin(distances)
+                col2[i] = np.argmin(distances)
+            print("row centroids looking ok?? ", np.sum(row == row2))
+            print("col centroids looking ok?? ", np.sum(col == col2))
 
         zeros_row = np.zeros((n,k))
         _, j_idx = np.mgrid[slice(zeros_row.shape[0]), slice(zeros_row.shape[1])] # prefer anything over for loop
