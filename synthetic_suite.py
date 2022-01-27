@@ -33,19 +33,21 @@ wbkm = __import__("wbkm numpy debugging land")
 import algorithms
 
 RNG_SEED=996535594000 # seed for reproducibility
-N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
+N_ROW_CLUSTERS, N_COL_CLUSTERS = 5,6 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
 SPARSITY = 0 # (Tasks 2,3) fill x % of matrix with zeroes
 NOISE = 0 # (Tasks 2,3) fill x % of matrix with nasty noise
 
 ALG = 'nbvd' # (Task != 3) clustering algorithm
 LABEL_CHECK = True
-ATTEMPTS_MAX = 2 # (NBVD, WBKM) maximum attempts
+CENTROID_CHECK = True
+ATTEMPTS_MAX = 3 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
 
-DATASET_NAME = "C-CoMatrix-600-600" # (Task 2) chosen dataset (regex expression)
+# I- com 5,6 é interessante
+DATASET_NAME = "I-" # (Task 2) chosen dataset (regex expression)
 MOVIE = False # (NBVD) display movie showing clustering iterations
 NORM_PLOT = True # (NBVD) display norm plot
 WAIT_TIME = 4 # (Task 3) wait time between tasks
@@ -106,7 +108,7 @@ def shaded_label_matrix (data, labels, type, method_name=None, RNG=None):
             legend_artist = mpatches.Patch(color=colors[i], label=labels[i])
             legend_dict[labels[i]] = legend_artist
 
-    plt.title(f"Shaded dataset: {method_name if method_name else ''}")
+    plt.title(f"Shaded dataset ({type}): {method_name if method_name else ''}")
     labels, handles = list(zip(*legend_dict.items()))
     plt.legend(handles, labels)
 
@@ -192,7 +194,7 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
 
     # internal indices
     #print("not fancy:")
-    if LABEL_CHECK:
+    if LABEL_CHECK and alg == 'nbvd':
         _, row1, col1 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="not fancy")
         #_, row2, col2 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="fancy")
         _, row3, col3 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids")
@@ -215,8 +217,8 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         print(thing(col1), 
             #thing(col2), 
             thing(col3), sep="\n")
-
-        # centroid stuff
+        
+    if CENTROID_CHECK and alg == 'nbvd':
         def __centroid_scatter_plot (samples, centroids, labels, type):
             _, n = centroids.shape
             if type == "row":
@@ -249,7 +251,8 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         __centroid_scatter_plot(data, row_centroids, model.row_labels_, "row")
         __centroid_scatter_plot(data.T, col_centroids, model.column_labels_, "col")
 
-        # shade original dataset
+    # shade original dataset
+    if LABEL_CHECK:
         shaded_label_matrix(data, model.row_labels_, type="rows",method_name="", RNG=RNG)
         shaded_label_matrix(data, model.column_labels_, type="columns",method_name="", RNG=RNG)
 
