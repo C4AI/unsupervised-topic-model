@@ -56,36 +56,7 @@ RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
 SYNTHETIC_FOLDER = 'synthetic/DataSets' # (Task 3) directory where synthetic datasets are stored
 LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and results sheet
 
-def logger_setup(log_folder : str, level=logging.DEBUG):
-    logger = logging.getLogger(__name__)
-    logger.setLevel(level) # handler levels take precedence over logger level
-
-    # create console handler and set level to debug
-    ch = logging.StreamHandler()
-    ch.setLevel(level)
-
-    # create formatter and add stuff to stuff
-    formatter = logging.Formatter('%(message)s')
-    ch.setFormatter(formatter) # add formatter to ch
-    logger.addHandler(ch) # add ch to logger
-
-    # create log folder for this run
-    os.makedirs(log_folder, exist_ok=True)
-    logger.log_folder = log_folder # add attribute for sneaky access
-
-    return logger
-
-def file_handler_add(logger : logging.Logger, name : str, replace=True, level=logging.DEBUG):
-    log_path = os.path.join(logger.log_folder, f'{name}.log')
-    fh = logging.FileHandler(filename=log_path, encoding='utf-8')
-    fh.setLevel(level)
-    formatter = logging.Formatter('%(message)s')
-    fh.setFormatter(formatter)
-    if replace and len(logger.handlers) == 2:
-        logger.removeHandler(logger.handlers[-1])
-    logger.addHandler(fh)
-
-def shaded_label_matrix (data, labels, type, method_name=None, RNG=None):
+def shaded_label_matrix (data, labels, kind, method_name=None, RNG=None):
     RNG = RNG or np.random.default_rng()
     fig, ax = plt.subplots()
     ax.matshow(data, cmap=plt.cm.Blues)
@@ -97,7 +68,7 @@ def shaded_label_matrix (data, labels, type, method_name=None, RNG=None):
     legend_dict = {}
     xs = np.arange(data.shape[1])
     for i, row in enumerate(data):
-        if type == "rows":
+        if kind == "rows":
             ax.fill_between(xs, i, i+1, color=colors[i], alpha=0.09)
         else:
             ys = np.arange(data.shape[0])
@@ -108,9 +79,56 @@ def shaded_label_matrix (data, labels, type, method_name=None, RNG=None):
             legend_artist = mpatches.Patch(color=colors[i], label=labels[i])
             legend_dict[labels[i]] = legend_artist
 
-    plt.title(f"Shaded dataset ({type}): {method_name if method_name else ''}")
+    plt.title(f"Shaded dataset ({kind}): {method_name if method_name else ''}")
     labels, handles = list(zip(*legend_dict.items()))
     plt.legend(handles, labels)
+
+def centroid_scatter_plot (samples, centroids, labels, kind, RNG=None):
+    RNG = RNG or np.random.default_rng()
+    _, n = centroids.shape
+    if kind == "row":
+        points = normalize(np.vstack([samples, centroids.T]), axis=1)
+        title = "Row centroids"
+    elif kind == "col":
+        points = normalize(np.vstack([samples, centroids.T]), axis=1)
+        title = "Column centroids"
+    pca = PCA(n_components=2)
+    #pca = TruncatedSVD(n_components=2)
+    #pca = KernelPCA(n_components=2)
+    reduced_points = pca.fit_transform(points)
+    #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
+    #print("reduced_points:", reduced_points.shape)
+    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+    colors = [palette[label] for label in labels]
+
+
+    fig, ax = plt.subplots()
+    # plot centroids in a way that allows us to label them
+    things = []
+    for i in range(n):
+        # note: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
+        thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=200, alpha=0.8)
+        things.append(thing)
+    ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
+    ax.legend(things, list(range(n)))
+    plt.title(title)
+
+def plot_norm_history (model):
+    y = model.norm_history
+    fig, ax = plt.subplots()
+    ax.plot(range(len(y)), y)
+    vel = get_difs(y, 10)
+    acc = get_difs(vel, 5)
+
+    acc = np.array(acc)
+    # TODO: test if ok
+    #args = np.arange(len(acc))[acc > acc.mean()]
+    #fig.vlines(args, ymin=min(y)-2*abs(min(y)), ymax=max(y)+abs(max(y)), color="black", alpha=0.2)
+    #print(args)
+    for i,val in enumerate(acc):
+        if val > sum(acc)/len(acc):
+            ax.axvline(i, color="black", alpha=0.1)
+    plt.title("Norm history")
 
 def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=ATTEMPTS_MAX, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None):
@@ -122,7 +140,8 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
     timer = None if only_one else WAIT_TIME * show_images 
 
     if not only_one:
-        plot_matrices([data], ["Original dataset"], timer=timer, savefig=first_image_save_path) # plot original data to build suspense
+        # plot original data to build suspense AND save figure if a save path is provided
+        plot_matrices([data], ["Original dataset"], timer=timer, savefig=first_image_save_path)
 
     if SHUFFLE_TEST:
         # shuffle clusters
@@ -143,6 +162,8 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
     elif alg == 'spectral':
         model = SpectralCoclustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
         model.fit(data)
+
+    ### exclude
     elif alg == 'kmeans':
         model = lambda : None
         # does this make sense i dont know
@@ -152,6 +173,8 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         col_model = KMeans(n_clusters=N_COL_CLUSTERS, random_state=RNG_SEED)
         col_model.fit(data.T)
         model.column_labels_ = col_model.labels_
+    ### exclude
+
     elif ALG == 'nbvd_waldyr':
         U, S, V, resNEW, itr = algorithms.NBVD(data, N_ROW_CLUSTERS, N_COL_CLUSTERS, itrMAX=2000)
         model = lambda: None
@@ -159,13 +182,15 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         model.biclusters_, model.row_labels_, model.column_labels_ = NBVD_coclustering.get_stuff(U, V.T)
         print("resNEW, itr:", resNEW, itr) # resNEW is norm squared; itr is iteration_no
     
+    # show animation of clustering process
     if MOVIE and alg == 'nbvd':
         pyqtgraph_thing(data, model, 25)
 
     #########################
     # evaluate results 
     #########################
-    # external indices:
+
+    ### external indices:
     if TASK==0:
         rows, columns = true_labels
         if SHUFFLE_TEST:
@@ -192,9 +217,12 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         ami = adjusted_mutual_info_score(true_columns, pred_columns)
         logger.info(f"columns:\n  ARI= {ari:.3f}\n  AMI= {ami:.3f}\n  VMs= {vmeasure:.3f}\n")
 
-    # internal indices
-    #print("not fancy:")
-    if LABEL_CHECK and alg == 'nbvd':
+    ### internal indices
+    # print silhouette scores
+    silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
+    
+    ### DBG: testing different methods of labelling
+    if alg == 'nbvd':
         _, row1, col1 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="not fancy")
         #_, row2, col2 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="fancy")
         _, row3, col3 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids")
@@ -217,50 +245,22 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         print(thing(col1), 
             #thing(col2), 
             thing(col3), sep="\n")
-        
-    if CENTROID_CHECK and alg == 'nbvd':
-        def __centroid_scatter_plot (samples, centroids, labels, type):
-            _, n = centroids.shape
-            if type == "row":
-                points = normalize(np.vstack([samples, centroids.T]), axis=1)
-                title = "Row centroids"
-            elif type == "col":
-                points = normalize(np.vstack([samples, centroids.T]), axis=1)
-                title = "Column centroids"
-            pca = PCA(n_components=2)
-            #pca = TruncatedSVD(n_components=2)
-            #pca = KernelPCA(n_components=2)
-            reduced_points = pca.fit_transform(points)
-            #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
-            #print("reduced_points:", reduced_points.shape)
-            palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
-            colors = [palette[label] for label in labels]
-
-
-            fig, ax = plt.subplots()
-            # plot centroids in a way that allows us to label them
-            things = []
-            for i in range(n):
-                # note: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
-                thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=200, alpha=0.8)
-                things.append(thing)
-            ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
-            ax.legend(things, list(range(n)))
-            plt.title(title)
-        row_centroids, col_centroids = model.centroids[0], model.centroids[1]
-        __centroid_scatter_plot(data, row_centroids, model.row_labels_, "row")
-        __centroid_scatter_plot(data.T, col_centroids, model.column_labels_, "col")
-
-    # shade original dataset
-    if LABEL_CHECK:
-        shaded_label_matrix(data, model.row_labels_, type="rows",method_name="", RNG=RNG)
-        shaded_label_matrix(data, model.column_labels_, type="columns",method_name="", RNG=RNG)
-
-    silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
-
-
-    # matplotlib
+    
     if show_images:
+        # shade lines/columns of original dataset
+        if LABEL_CHECK:
+            shaded_label_matrix(data, model.row_labels_, kind="rows",method_name="", RNG=RNG)
+            shaded_label_matrix(data, model.column_labels_, kind="columns",method_name="", RNG=RNG)
+        # centroid (and dataset) (normalized) scatter plot
+        if CENTROID_CHECK and alg == 'nbvd':
+            row_centroids, col_centroids = model.centroids[0], model.centroids[1]
+            centroid_scatter_plot(data, row_centroids, model.row_labels_, kind="row", RNG=RNG)
+            centroid_scatter_plot(data.T, col_centroids, model.column_labels_, kind="col", RNG=RNG)
+        # norm evolution
+        if hasattr(model, "norm_history"):
+            plot_norm_history(model)
+
+        # general plots
         if alg == 'nbvd':
             to_plot = [data, model.R@model.B@model.C]
             names = ["Original dataset", "Reconstructed matrix RBC"]
@@ -270,32 +270,16 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         elif alg =="nbvd_waldyr":
             to_plot = [data, model.U@model.S@model.V.T, model.S]
             names = ["Original dataset", "Reconstructed matrix USV.T", "Block value matrix S"]
-        if hasattr(model, "norm_history"):
-            y = model.norm_history
-            fig, ax = plt.subplots()
-            ax.plot(range(len(y)), y)
-            vel = get_difs(y, 10)
-            acc = get_difs(vel, 5)
-
-            acc = np.array(acc)
-            # TODO: test if ok
-            #args = np.arange(len(acc))[acc > acc.mean()]
-            #fig.vlines(args, ymin=min(y)-2*abs(min(y)), ymax=max(y)+abs(max(y)), color="black", alpha=0.2)
-            #print(args)
-            for i,val in enumerate(acc):
-                if val > sum(acc)/len(acc):
-                    ax.axvline(i, color="black", alpha=0.1)
-            plt.title("Norm history")
-
         plot_matrices(to_plot, names, timer = None if (not SHUFFLE_TEST and only_one) else 2*timer)
     
-    if SHUFFLE_TEST:
-        # rearranged data
-        fit_data = data[np.argsort(model.row_labels_)]
-        fit_data = fit_data[:, np.argsort(model.column_labels_)]
-        if show_images:
-            plot_matrices([data, fit_data], ["Original dataset", "After biclustering; rearranged to show biclusters"], timer=timer)
+        if SHUFFLE_TEST:
+            # rearranged data
+            fit_data = data[np.argsort(model.row_labels_)]
+            fit_data = fit_data[:, np.argsort(model.column_labels_)]
+            if show_images:
+                plot_matrices([data, fit_data], ["Original dataset", "After biclustering (rearranged to show biclusters)"], timer=timer)
 
+    # return general statistics
     if alg == 'nbvd':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
             best_iter=model.best_iter, best_norm=model.best_norm, n_attempts=n_attempts)
@@ -392,7 +376,7 @@ def main():
             s1,s2=cool_header_thing(), cool_header_thing()
             print(f"""{s1}  {''.join(list(reversed(s1)))}\n{s2} {''.join(list(reversed(s2)))}
             Task: {task_name}\n{s1} {''.join(list(reversed(s1)))}\n{s2}  {''.join(list(reversed(s2)))}""")
-        do_task_single(data, alg=ALG, RNG_SEED=RNG_SEED)
+        do_task_single(data, only_one=True, alg=ALG, RNG_SEED=RNG_SEED)
     elif TASK == 3:
         n_attempts = ATTEMPTS_MAX
         alg_list = ['nbvd', 'wbkm', 'spectral', 'kmeans']

@@ -123,6 +123,35 @@ def start_default_rng (seed=None, logger=None):
         print(f"Random seed is: {new_seed}\n")
     return (new_rng, new_seed)
 
+def logger_setup(log_folder : str, level=logging.DEBUG):
+    logger = logging.getLogger(__name__)
+    logger.setLevel(level) # handler levels take precedence over logger level
+
+    # create console handler and set level to debug
+    ch = logging.StreamHandler()
+    ch.setLevel(level)
+
+    # create formatter and add stuff to stuff
+    formatter = logging.Formatter('%(message)s')
+    ch.setFormatter(formatter) # add formatter to ch
+    logger.addHandler(ch) # add ch to logger
+
+    # create log folder for this run
+    os.makedirs(log_folder, exist_ok=True)
+    logger.log_folder = log_folder # add attribute for sneaky access
+
+    return logger
+
+def file_handler_add(logger : logging.Logger, name : str, replace=True, level=logging.DEBUG):
+    log_path = os.path.join(logger.log_folder, f'{name}.log')
+    fh = logging.FileHandler(filename=log_path, encoding='utf-8')
+    fh.setLevel(level)
+    formatter = logging.Formatter('%(message)s')
+    fh.setFormatter(formatter)
+    if replace and len(logger.handlers) == 2:
+        logger.removeHandler(logger.handlers[-1])
+    logger.addHandler(fh)
+
 def dump_globals (globals_dict, logger=None):
     cool_types = {int, tuple, str, bool, list}
     banned_keys = {'__name__', '__file__'}
@@ -155,7 +184,8 @@ def get_difs (a, window):
     for i, v in enumerate(a):
         if i < window//2 or i > n - window//2:
             continue
-        new[i] = sum(difs[i-window//2 : i+window//2+extra]) / window
+        sl = difs[i-window//2 : i+window//2+extra]
+        new[i] = sum(sl) / len(sl)
     for i in range(window//2):
         new[i] = new[window//2]
         new[n-i-1] = new[n-window//2]
