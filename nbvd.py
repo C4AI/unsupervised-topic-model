@@ -58,6 +58,7 @@ class NBVD_coclustering:
     biclusters_: np.ndarray = field(init=False)
     row_labels_: np.ndarray = field(init=False)
     column_labels_: np.ndarray = field(init=False)
+    cluster_assoc: np.ndarray = field(init=False)
     R: np.ndarray = field(init=False)
     B: np.ndarray = field(init=False)
     C: np.ndarray = field(init=False)
@@ -285,6 +286,12 @@ class NBVD_coclustering:
         bic = (bic_rows.T, bic_cols.T)
         return (bic, row, col)
 
+    def get_cluster_assoc (self):
+        R, B, C = self.R, self.B, self.C
+        k, l = B.shape
+        B_row_avg = np.average(B, axis=1) # NOTE: chosen so that each document cluster is associated w/ something
+        self.cluster_assoc = (B >= B_row_avg.reshape((k,1)).repeat(l, axis=1))
+        
 
     # run after auto-generated init
     def __post_init__(self):
@@ -305,9 +312,10 @@ class NBVD_coclustering:
             self.R, self.B, self.C = self.do_things(Z, symmetric=False, rng=rng, verbose=self.verbose)
             self.centroids = self.get_centroids()
             self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(self.R, self.C, self.B, self.data, self.centroids)
+            self.get_cluster_assoc() # for cocluster analysis
 
-
-        """ # warn about using symmetric instead
+        # TODO: warn about using symmetric instead
+        """ 
             if k == l:
                 mat_debug(R-C.T, "pls no equal")
         """

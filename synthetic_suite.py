@@ -23,7 +23,6 @@ from datetime import datetime
 from collections import deque, Counter
 import pandas as pd
 
-#TODO: nbvd centroids (properly)
 #TODO: vary k,l select best
 #TODO: images for nbvd, wbkm
 
@@ -33,25 +32,30 @@ wbkm = __import__("wbkm numpy debugging land")
 import algorithms
 
 RNG_SEED=996535594000 # seed for reproducibility
-N_ROW_CLUSTERS, N_COL_CLUSTERS = 5,6 # number of row, column clusters
+N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
 SPARSITY = 0 # (Tasks 2,3) fill x % of matrix with zeroes
 NOISE = 0 # (Tasks 2,3) fill x % of matrix with nasty noise
 
+
+# B-CMatrix com 3,3 é fácil
+# I- com 5,6 é interessante
+DATASET_NAME = "B-CMatrix" # (Task 2) chosen dataset (regex expression)
 ALG = 'nbvd' # (Task != 3) clustering algorithm
-LABEL_CHECK = True
-CENTROID_CHECK = True
-ATTEMPTS_MAX = 3 # (NBVD, WBKM) maximum attempts
+ATTEMPTS_MAX = 1 # (NBVD, WBKM) maximum attempts
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
+
 TASK = 2 # 0: make_biclusters; 1: my weird gradient checkerboard; 2: single synthetic dataset; 3: all synthetic datasets
 SHUFFLE_TEST = False # (Task 0) shuffle original matrix and use the clustering to try to recover it
-
-# I- com 5,6 é interessante
-DATASET_NAME = "I-" # (Task 2) chosen dataset (regex expression)
 MOVIE = False # (NBVD) display movie showing clustering iterations
-NORM_PLOT = True # (NBVD) display norm plot
 WAIT_TIME = 4 # (Task 3) wait time between tasks
 SHOW_IMAGES = True # (Task 3) display matrices
+LABEL_CHECK = True
+CENTROID_CHECK = True
+COCLUSTER_CHECK = True # laggy currently!
+NORM_PLOT = True # (NBVD) display norm plot
+
+
 RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
 SYNTHETIC_FOLDER = 'synthetic/DataSets' # (Task 3) directory where synthetic datasets are stored
 LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and results sheet
@@ -62,26 +66,75 @@ def shaded_label_matrix (data, labels, kind, method_name=None, RNG=None):
     ax.matshow(data, cmap=plt.cm.Blues)
 
     # colors for shading
-    n = 1+max(labels)
+    n = 1+max(labels) # 0-indexed
     palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
     colors = [palette[label] for label in labels]
     legend_dict = {}
-    xs = np.arange(data.shape[1])
+
+    xs, ys = np.arange(data.shape[1]), np.arange(data.shape[0])
     for i, row in enumerate(data):
         if kind == "rows":
             ax.fill_between(xs, i, i+1, color=colors[i], alpha=0.09)
         else:
-            ys = np.arange(data.shape[0])
             ax.fill_betweenx(ys, i, i+1, color=colors[i], alpha=0.09)
         
-        # for legends
+        # keep track of legends
         if labels[i] not in legend_dict:
             legend_artist = mpatches.Patch(color=colors[i], label=labels[i])
             legend_dict[labels[i]] = legend_artist
 
     plt.title(f"Shaded dataset ({kind}): {method_name if method_name else ''}")
     labels, handles = list(zip(*legend_dict.items()))
-    plt.legend(handles, labels)
+    plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
+
+def shade_coclusters (data, row_col_labels : Tuple[int], cluster_assoc, RNG=None):
+    RNG = RNG or np.random.default_rng()
+    fig, ax = plt.subplots()
+    row_labels, col_labels = row_col_labels
+    ax.matshow(data, cmap=plt.cm.Blues, alpha=0) # just to orient axes
+
+    # colors for shading
+    n = cluster_assoc.sum() # significant (True) associations
+    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+    color_dict, max_color = {}, -1
+    legend_dict = {}
+
+    COUNT=False
+    xs, ys = np.arange(data.shape[1] + 1), np.arange(data.shape[0])
+    for y in ys:
+        to_fills = {} # list of regions to be painted
+
+        for x in xs[:-1]:
+            possible_cocluster = (row_labels[x], col_labels[y])
+            is_cocluster = cluster_assoc[possible_cocluster]
+            if is_cocluster:
+                # keep track of colors and legends
+                if possible_cocluster not in color_dict:
+                    max_color += 1 # new color
+                    color_dict[possible_cocluster] = palette[max_color]
+                    legend_artist = mpatches.Patch(color=color_dict[possible_cocluster], label=possible_cocluster)
+                    legend_dict[possible_cocluster] = legend_artist
+                
+                color = color_dict[possible_cocluster]
+                if color not in to_fills:
+                    to_fills[color] = np.full(len(xs), False) # array indicating regions to be painted
+
+                # paint cocluster (later)
+                to_fill = to_fills[color]
+                to_fill[x:x+2] = True # 2+ True values specify an x region to be filled
+        if COUNT:
+            #print(colors[300:500])
+            #print(to_fill[300:500])
+            #print(to_fill.shape, colors.shape)
+            COUNT = False
+        
+        # fill_between cannot handle a color array apparently and will just pick the first color [matplotlib 3.4.3]
+        for color, to_fill in to_fills.items():
+            ax.fill_between(xs, y, y+1, where=to_fill, color=color) #RNG.random((len(xs),4))
+
+    plt.title(f"Shaded coclusters")
+    labels, handles = list(zip(*legend_dict.items()))
+    plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
 
 def centroid_scatter_plot (samples, centroids, labels, kind, RNG=None):
     RNG = RNG or np.random.default_rng()
@@ -110,7 +163,7 @@ def centroid_scatter_plot (samples, centroids, labels, kind, RNG=None):
         thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=200, alpha=0.8)
         things.append(thing)
     ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
-    ax.legend(things, list(range(n)))
+    ax.legend(things, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
     plt.title(title)
 
 def plot_norm_history (model):
@@ -249,8 +302,13 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
     if show_images:
         # shade lines/columns of original dataset
         if LABEL_CHECK:
-            shaded_label_matrix(data, model.row_labels_, kind="rows",method_name="", RNG=RNG)
-            shaded_label_matrix(data, model.column_labels_, kind="columns",method_name="", RNG=RNG)
+            shaded_label_matrix(data, model.row_labels_, kind="rows",method_name="rows", RNG=RNG)
+            shaded_label_matrix(data, model.column_labels_, kind="columns",method_name="columns", RNG=RNG)
+            if COCLUSTER_CHECK and alg == "nbvd":
+                shade_coclusters(data, (model.row_labels_, model.column_labels_), 
+                    model.cluster_assoc, RNG=RNG)
+            
+            
         # centroid (and dataset) (normalized) scatter plot
         if CENTROID_CHECK and alg == 'nbvd':
             row_centroids, col_centroids = model.centroids[0], model.centroids[1]
