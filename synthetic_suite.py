@@ -4,14 +4,10 @@ import numpy as np
 from numpy.linalg import inv, norm
 from numpy.random import default_rng
 from matplotlib import pyplot as plt
-import matplotlib.colors as mcolors
-import matplotlib.patches as mpatches
 from sklearn.datasets import make_biclusters, make_blobs
 from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
 from sklearn.utils import  Bunch
-from sklearn.decomposition import *
-from sklearn.preprocessing import *
 from dataclasses import dataclass, field
 from typing import Tuple
 from queue import PriorityQueue
@@ -32,6 +28,7 @@ wbkm = __import__("wbkm numpy debugging land")
 import algorithms
 
 RNG_SEED=996535594000 # seed for reproducibility
+#RNG_SEED=99654 # tested with 600,400, D- (3,5)
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 3,3 # number of row, column clusters
 MAT_SHAPE = (600, 600) # matrix shape
 SPARSITY = 0 # (Tasks 2,3) fill x % of matrix with zeroes
@@ -52,7 +49,7 @@ WAIT_TIME = 4 # (Task 3) wait time between tasks
 SHOW_IMAGES = True # (Task 3) display matrices
 LABEL_CHECK = True
 CENTROID_CHECK = True
-COCLUSTER_CHECK = True # laggy currently!
+COCLUSTER_CHECK = True
 NORM_PLOT = True # (NBVD) display norm plot
 
 
@@ -60,128 +57,6 @@ RERUN_GENERATE = False # (Task 3) re-generate synthetic datasets
 SYNTHETIC_FOLDER = 'synthetic/DataSets' # (Task 3) directory where synthetic datasets are stored
 LOG_BASE_FOLDER = 'synthetic/logs' # (Task 3) base directory for logging and results sheet
 
-def shaded_label_matrix (data, labels, kind, method_name=None, RNG=None):
-    RNG = RNG or np.random.default_rng()
-    fig, ax = plt.subplots()
-    ax.matshow(data, cmap=plt.cm.Blues)
-
-    # colors for shading
-    n = 1+max(labels) # 0-indexed
-    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
-    colors = [palette[label] for label in labels]
-    legend_dict = {}
-
-    xs, ys = np.arange(data.shape[1]), np.arange(data.shape[0])
-    for i, row in enumerate(data):
-        if kind == "rows":
-            ax.fill_between(xs, i, i+1, color=colors[i], alpha=0.09)
-        else:
-            ax.fill_betweenx(ys, i, i+1, color=colors[i], alpha=0.09)
-        
-        # keep track of legends
-        if labels[i] not in legend_dict:
-            legend_artist = mpatches.Patch(color=colors[i], label=labels[i])
-            legend_dict[labels[i]] = legend_artist
-
-    plt.title(f"Shaded dataset ({kind}): {method_name if method_name else ''}")
-    labels, handles = list(zip(*legend_dict.items()))
-    plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
-
-def shade_coclusters (data, row_col_labels : Tuple[int], cluster_assoc, RNG=None):
-    RNG = RNG or np.random.default_rng()
-    fig, ax = plt.subplots()
-    row_labels, col_labels = row_col_labels
-    ax.matshow(data, cmap=plt.cm.Blues, alpha=0) # just to orient axes
-
-    # colors for shading
-    n = cluster_assoc.sum() # significant (True) associations
-    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
-    color_dict, max_color = {}, -1
-    legend_dict = {}
-
-    COUNT=False
-    xs, ys = np.arange(data.shape[1] + 1), np.arange(data.shape[0])
-    for y in ys:
-        to_fills = {} # list of regions to be painted
-
-        for x in xs[:-1]:
-            possible_cocluster = (row_labels[x], col_labels[y])
-            is_cocluster = cluster_assoc[possible_cocluster]
-            if is_cocluster:
-                # keep track of colors and legends
-                if possible_cocluster not in color_dict:
-                    max_color += 1 # new color
-                    color_dict[possible_cocluster] = palette[max_color]
-                    legend_artist = mpatches.Patch(color=color_dict[possible_cocluster], label=possible_cocluster)
-                    legend_dict[possible_cocluster] = legend_artist
-                
-                color = color_dict[possible_cocluster]
-                if color not in to_fills:
-                    to_fills[color] = np.full(len(xs), False) # array indicating regions to be painted
-
-                # paint cocluster (later)
-                to_fill = to_fills[color]
-                to_fill[x:x+2] = True # 2+ True values specify an x region to be filled
-        if COUNT:
-            #print(colors[300:500])
-            #print(to_fill[300:500])
-            #print(to_fill.shape, colors.shape)
-            COUNT = False
-        
-        # fill_between cannot handle a color array apparently and will just pick the first color [matplotlib 3.4.3]
-        for color, to_fill in to_fills.items():
-            ax.fill_between(xs, y, y+1, where=to_fill, color=color) #RNG.random((len(xs),4))
-
-    plt.title(f"Shaded coclusters")
-    labels, handles = list(zip(*legend_dict.items()))
-    plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
-
-def centroid_scatter_plot (samples, centroids, labels, kind, RNG=None):
-    RNG = RNG or np.random.default_rng()
-    _, n = centroids.shape
-    if kind == "row":
-        points = normalize(np.vstack([samples, centroids.T]), axis=1)
-        title = "Row centroids"
-    elif kind == "col":
-        points = normalize(np.vstack([samples, centroids.T]), axis=1)
-        title = "Column centroids"
-    pca = PCA(n_components=2)
-    #pca = TruncatedSVD(n_components=2)
-    #pca = KernelPCA(n_components=2)
-    reduced_points = pca.fit_transform(points)
-    #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
-    #print("reduced_points:", reduced_points.shape)
-    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
-    colors = [palette[label] for label in labels]
-
-
-    fig, ax = plt.subplots()
-    # plot centroids in a way that allows us to label them
-    things = []
-    for i in range(n):
-        # note: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
-        thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=200, alpha=0.8)
-        things.append(thing)
-    ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
-    ax.legend(things, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
-    plt.title(title)
-
-def plot_norm_history (model):
-    y = model.norm_history
-    fig, ax = plt.subplots()
-    ax.plot(range(len(y)), y)
-    vel = get_difs(y, 10)
-    acc = get_difs(vel, 5)
-
-    acc = np.array(acc)
-    # TODO: test if ok
-    #args = np.arange(len(acc))[acc > acc.mean()]
-    #fig.vlines(args, ymin=min(y)-2*abs(min(y)), ymax=max(y)+abs(max(y)), color="black", alpha=0.2)
-    #print(args)
-    for i,val in enumerate(acc):
-        if val > sum(acc)/len(acc):
-            ax.axvline(i, color="black", alpha=0.1)
-    plt.title("Norm history")
 
 def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=ATTEMPTS_MAX, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None):

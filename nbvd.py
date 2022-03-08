@@ -263,7 +263,8 @@ class NBVD_coclustering:
             col_distances = norm(Z_col_extra-c_col_extra, axis=1)
             col = np.argmin(col_distances, axis=1)
 
-            # sanity check
+            """
+            # DBG EXCLUDE sanity check
             row2, col2 = np.zeros((n,), dtype="int64"), np.zeros((m,), dtype="int64")
             for i, r in enumerate(Z):
                 distances = [norm(r-centroid) for centroid in row_centroids.T]
@@ -273,6 +274,7 @@ class NBVD_coclustering:
                 col2[i] = np.argmin(distances)
             print("row centroids looking ok?? ", np.sum(row == row2))
             print("col centroids looking ok?? ", np.sum(col == col2))
+            """
 
         zeros_row = np.zeros((n,k))
         _, j_idx = np.mgrid[slice(zeros_row.shape[0]), slice(zeros_row.shape[1])] # prefer anything over for loop
