@@ -166,9 +166,9 @@ def do_task_single (data, true_labels=None, only_one=True, alg=ALG, n_attempts=A
         print(thing(row1), 
             #thing(row2),
             thing(row3), sep="\n")
-        print(row1)
+        #print(row1)
         #print(row2)
-        print(row3)
+        #print(row3)
         print("cols:")
         print(thing(col1), 
             #thing(col2), 

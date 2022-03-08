@@ -31,23 +31,24 @@ np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very pers
 # w2v:
 # 42123456 (8,5)
 # 12 (4,6) dim=50
+# tfidf (reduzido):
+# 42 (4,4) cent_select=false
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 4,4
 RNG_SEED=42
-VECTORIZATION='tfidf'
+VECTORIZATION='w2v'
 W2V_DIM=100
 ALG='nbvd'
 ATTEMPTS_MAX=1
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 WAIT_TIME = 4 # wait time between tasks
-SHOW_IMAGES = True # display matrices
 LABEL_CHECK = True
 CENTROID_CHECK = True
 COCLUSTER_CHECK = True
 NORM_PLOT = False # (NBVD) display norm plot
-CENTROID_REPRESENTATIVE=False
+CENTROID_SELECTION=True
 rerun_embedding=True
 MOVIE=False
-ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf
+ASPECT_RATIO=1/6 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 
 
 
@@ -145,10 +146,18 @@ class Preprocessor:
                 newX.append(self.preprocess(sentence))
         return newX
 
+def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representatives):
+    count = 0
+    for i, _ in dists_to_centroid:
+        if labels[i] == cluster_no:
+            count += 1
+            yield i
+        if count >= n_representatives:
+            return # stop yielding
+
 def get_representatives (data, labels, centroids, n_clusters, n_representatives=3):
     cluster_representatives = {}
-    print("picking representatives:")
-    if CENTROID_REPRESENTATIVE:
+    if CENTROID_SELECTION:
         all_distances = np.zeros((data.shape[0], n_clusters))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid) for centroid in centroids.T]
@@ -157,14 +166,9 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
                 key = lambda t : t[1])
 
             # select top n; eliminate candidates that arent from the relevant cluster
-            rep_candidates = [t[0] for t in dists_to_centroid[:n_representatives]]
-            print(len(rep_candidates), end=" and then ")
-            for cand in rep_candidates[:]:
-                if labels[cand] != c:
-                    rep_candidates.remove(cand)
-            print(len(rep_candidates))
+            rep_candidates = list(__candidate_selection(dists_to_centroid, labels, c, n_representatives))
             if rep_candidates: # if anyones left
-                cluster_representatives[c] = rep_candidates
+                cluster_representatives[c] = rep_candidates           
     else:
         # get cluster averages
         cluster_avgs = {}
@@ -184,12 +188,7 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
                 key = lambda t : t[1])
                 
             # select top n; eliminate candidates that arent from the relevant cluster
-            rep_candidates = [t[0] for t in dists_to_centroid[:n_representatives]]
-            print(len(rep_candidates), end=" and then ")
-            for cand in rep_candidates[:]:
-                if labels[cand] != c:
-                    rep_candidates.remove(cand)
-            print(len(rep_candidates))
+            rep_candidates = list(__candidate_selection(dists_to_centroid, labels, c, n_representatives))
             if rep_candidates: # if anyones left
                 cluster_representatives[c] = rep_candidates
     return cluster_representatives
@@ -224,15 +223,10 @@ def cluster_summary (data, original_data, vec, model, logger=None):
             print_or_log("rep:", rep)
             print_or_log(original_data[rep][:200])
         print_or_log("--------------------------------------------------------\n")
-    print("stuffs")
-    print(model.row_labels_[119])
-    print(vec.vocabulary_["to"], vec.vocabulary_["for"], vec.vocabulary_["with"])
-    print(model.column_labels_[vec.vocabulary_["to"]], model.column_labels_[vec.vocabulary_["for"]], 
-        model.column_labels_[vec.vocabulary_["with"]])
 
     # words
-    print_or_log("WORDS:\n")
     if isinstance(vec, TfidfVectorizer):
+        print_or_log("WORDS:\n")
         idx_to_word = vec.get_feature_names()
         for i, c in sorted(col_cluster_representatives.items()):
             print_or_log("cluster:", i)
@@ -242,7 +236,7 @@ def cluster_summary (data, original_data, vec, model, logger=None):
             print_or_log(*to_print, sep=", ")
             print_or_log("--------------------------------------------------------\n")
 
-def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, n_attempts=ATTEMPTS_MAX, 
+def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None):
     RNG = np.random.default_rng(RNG_SEED)
     if logger:
@@ -260,10 +254,10 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
     # do co-clustering
     if alg == 'nbvd':
         model = NBVD_coclustering(data, symmetric=SYMMETRIC, n_row_clusters=N_ROW_CLUSTERS, 
-            n_col_clusters=N_COL_CLUSTERS, n_attempts=n_attempts, random_state=RNG_SEED, 
+            n_col_clusters=N_COL_CLUSTERS, n_attempts=1, random_state=RNG_SEED, 
             verbose=True, save_history=MOVIE, save_norm_history=NORM_PLOT, logger=logger)
     elif alg == 'wbkm':
-        model = wbkm.WBKM_coclustering(data, n_clusters=N_ROW_CLUSTERS, n_attempts=n_attempts,
+        model = wbkm.WBKM_coclustering(data, n_clusters=N_ROW_CLUSTERS, n_attempts=1,
             random_state=RNG_SEED, verbose=True, logger=logger)
     elif alg == 'spectral':
         model = SpectralCoclustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
@@ -352,11 +346,11 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
     # return general statistics
     if alg == 'nbvd':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
-            best_iter=model.best_iter, best_norm=model.best_norm, n_attempts=n_attempts)
+            best_iter=model.best_iter, best_norm=model.best_norm, n_attempts=1)
     elif alg == 'wbkm':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
             max_iter_reached=model.best_max_iter_reached, best_norm=model.best_norm,
-            no_zero_cols=model.best_no_zero_cols, n_attempts=n_attempts)
+            no_zero_cols=model.best_no_zero_cols, n_attempts=1)
     elif alg == 'spectral':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
     elif alg == 'kmeans':
@@ -431,63 +425,21 @@ def main():
         data = w2v_combine_sentences(tok_sentences, full_model, isDoc2Vec=True)
 
     print("shape, type:", data.shape, type(data))
+
     # do co-clustering
-    results = do_task_single(data, new_abstracts, vec, alg=ALG, RNG_SEED=RNG_SEED)
+    if ATTEMPTS_MAX > 1:
+        attempt = 0
+        while attempt < ATTEMPTS_MAX:
+            try:
+                results = do_task_single(data, new_abstracts, vec, only_one = False, alg=ALG, RNG_SEED=RNG_SEED+attempt)
+                plt.pause(25)
+            except Exception as e:
+                print(str(e))
+                time.sleep(2)
+            finally:
+                attempt += 1
+    else:
+        do_task_single(data, new_abstracts, vec, alg=ALG, RNG_SEED=RNG_SEED)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    """
-    # do co-clustering
-    if ALG == 'nbvd':
-        model = NBVD_coclustering(data, n_row_clusters=N_ROW_CLUSTERS, n_col_clusters=N_COL_CLUSTERS, 
-            n_attempts=ATTEMPTS_MAX, random_state=RNG_SEED, 
-            verbose=True, save_history=MOVIE)
-    elif ALG == 'wbkm':
-        model = wbkm.WBKM_coclustering(data, N_ROW_CLUSTERS, random_state=RNG_SEED, 
-        n_attempts=ATTEMPTS_MAX, verbose=True)
-    elif ALG == 'spectral':
-        model = SpectralCoclustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
-        model.fit(data)
-    elif ALG == 'kmeans':
-        model = lambda : None
-        # does this make sense i dont know
-        row_model = KMeans(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
-        row_model.fit(data)
-        model.row_labels_ = row_model.labels_
-        col_model = KMeans(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
-        col_model.fit(data.T)
-        model.column_labels_ = col_model.labels_
-    elif ALG == 'nbvd_waldyr':
-        U, S, V, resNEW, itr = algorithms.NBVD(data, N_ROW_CLUSTERS, N_COL_CLUSTERS, itrMAX=2000)
-        model = lambda: None
-        model.biclusters_, model.row_labels_, model.column_labels_ = NBVD_coclustering.get_stuff(U, V.T)
-        print("resNEW, itr:", resNEW, itr) # resNEW is norm squared; itr is iteration_no
-
-    # internal indices
-    print_silhouette_score(data, model.row_labels_, model.column_labels_)
-    
-    ##################################################### 
-    # pyqtgraph
-    #####################################################
-    if MOVIE and ALG == 'nbvd':
-        pyqtgraph_thing (data, model, 25)
-    """
 if __name__ == "__main__":
     main()
