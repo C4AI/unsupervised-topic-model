@@ -36,8 +36,9 @@ stop_words_sklearn = TfidfVectorizer(stop_words='english').get_stop_words()
 #print(stop_words_sklearn)
 np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
-stop_words_nltk.extend(['also','semi','non','et','al','one','six','like','pre','ltd','sa','SA','copyright','eg','etc','two','de','g','kg','mg','mv','km','km2','cm','bpd','bbl','elsevier','cu','ca','mday','yr','per','inc'])
+stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre','ltd','sa','SA','copyright','eg','etc','de','g','kg','mg','mv','km','km2','cm','bpd','bbl','elsevier','cu','ca','mday','yr','per','inc'])
 # false positives: Cu, Ca
+# within, numeros, across, top, previously
 
 # w2v:
 # 42123456 (8,5)
@@ -177,20 +178,13 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
         if count >= n_representatives:
             return # stop yielding
 
-def get_representatives (data, labels, centroids, n_clusters, n_representatives=3):
+def get_representatives (data, labels, centroids, n_clusters, n_representatives=3, reverse=False):
     cluster_representatives = {}
     if CENTROID_SELECTION:
         all_distances = np.zeros((data.shape[0], n_clusters))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid) for centroid in centroids.T]
-        for c in range(n_clusters):
-            dists_to_centroid = sorted(zip(list(range(data.shape[0])), list(all_distances[:,c])), 
-                key = lambda t : t[1])
-
-            # select top n; eliminate candidates that arent from the relevant cluster
-            rep_candidates = list(__candidate_selection(dists_to_centroid, labels, c, n_representatives))
-            if rep_candidates: # if anyones left
-                cluster_representatives[c] = rep_candidates           
+        N = n_clusters        
     else:
         # get cluster averages
         cluster_avgs = {}
@@ -205,38 +199,46 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
         all_distances = np.zeros((data.shape[0], len(ord_clusters)))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-cluster_avg) for cluster_avg in ord_clusters]
-        for c in range(len(ord_clusters)):
-            dists_to_centroid = sorted(zip(list(range(data.shape[0])), list(all_distances[:,c])), 
-                key = lambda t : t[1])
-                
-            # select top n; eliminate candidates that arent from the relevant cluster
-            rep_candidates = list(__candidate_selection(dists_to_centroid, labels, c, n_representatives))
-            if rep_candidates: # if anyones left
-                cluster_representatives[c] = rep_candidates
+        N = len(ord_clusters)
+
+    # get representatives
+    for c in range(N):
+        dists_to_centroid = sorted(zip(list(range(data.shape[0])), list(all_distances[:,c])), 
+            key = lambda t : t[1], reverse=reverse)
+
+        # select top n; eliminate candidates that arent from the relevant cluster
+        rep_candidates = list(__candidate_selection(dists_to_centroid, labels, c, n_representatives))
+        if rep_candidates: # if anyones left
+            cluster_representatives[c] = rep_candidates   
     return cluster_representatives
+
+def calculate_occurrence (word, original_data, indices):
+    count = 0
+    for i in indices:
+        if word.lower() in original_data[i].lower():
+            count += 1
+    return count
 
 def cluster_summary (data, original_data, vec, model, logger=None):
     print_or_log = logger.info if logger else print
     cluster_assoc = model.cluster_assoc
     assoc_shape = cluster_assoc.shape
+    k,l = assoc_shape
     row_centroids, col_centroids = model.centroids
 
-    """
     # get relevant coclusters
     relevant_coclusters = []
     for i in range(assoc_shape[0]):
         for j in range(assoc_shape[1]):
             if cluster_assoc[i,j]:
                 relevant_coclusters.append((i,j))
-    """
     
-    # get relevant documents
+    # get representatives
     row_cluster_representatives = get_representatives(data, model.row_labels_, row_centroids, 
         assoc_shape[0], n_representatives=3)
     col_cluster_representatives = get_representatives(data.T, model.column_labels_, col_centroids, 
-        assoc_shape[1], n_representatives=300)
+        assoc_shape[1], n_representatives=100)
 
-    ## TODO: check for relevant cocluster?
     # documents
     print_or_log("DOCUMENTS:\n")
     for i, reps in sorted(row_cluster_representatives.items()):
@@ -257,6 +259,35 @@ def cluster_summary (data, original_data, vec, model, logger=None):
                 to_print.append(idx_to_word[rep])
             print_or_log(*to_print, sep=", ")
             print_or_log("--------------------------------------------------------\n")
+        
+        print("COCLUSTERS:")
+        N = 50
+        print(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
+        row_reps_top10 = get_representatives(data, model.row_labels_, row_centroids, 
+            assoc_shape[0], n_representatives=N)
+        row_reps_bottom10 = get_representatives(data, model.row_labels_, row_centroids, 
+            assoc_shape[0], n_representatives=N, reverse=True)
+        for dc, wc in relevant_coclusters:
+            print("cocluster:", (dc, wc),"\n")
+            to_print = []
+            for i, reps in col_cluster_representatives.items():
+                if i == wc:
+                    for w in reps:
+                        try:
+                            word = idx_to_word[w]
+                            oc_top = calculate_occurrence(word, original_data, row_reps_top10[dc])
+                            oc_bottom = calculate_occurrence(word, original_data, row_reps_bottom10[dc])
+                            oc_other1 = calculate_occurrence(word, original_data, row_reps_top10[(dc+1)%k])
+                            oc_other2 = calculate_occurrence(word, original_data, row_reps_top10[(dc+2)%k])
+                            oc_other3 = calculate_occurrence(word, original_data, row_reps_top10[(dc+3)%k])
+
+                            to_print.append(f"{word}({oc_top*100/N:.0f}%)({oc_bottom*100/N:.0f}%) ({oc_other1*100/N:.0f}%)({oc_other2*100/N:.0f}%)({oc_other3*100/N:.0f}%)")
+                        except Exception as e:
+                            print(str(e))
+                    break
+                else:
+                    continue
+            print(", ".join(to_print), end="\n--------------------------------------------------------\n\n")
 
 def do_vectorization (new_abstracts, vectorization_type, **kwargs):
     if vectorization_type == 'tfidf':
@@ -397,7 +428,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         print(thing(col1), 
             #thing(col2), 
             thing(col3), sep="\n")
-    
+
     if show_images:
         # shade lines/columns of original dataset
         if LABEL_CHECK:
