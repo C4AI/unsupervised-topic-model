@@ -13,6 +13,8 @@ from sklearn.metrics import silhouette_score, consensus_score, accuracy_score, a
 from sklearn.datasets import make_blobs
 from sklearn.feature_extraction.text import *
 from sklearn.preprocessing import normalize
+import nltk
+
 from collections import Counter
 import itertools
 from pprint import pprint
@@ -26,7 +28,16 @@ wbkm = __import__("wbkm numpy debugging land")
 from nbvd import NBVD_coclustering
 from my_utils import *
 
+#downloads = [nltk.download('stopwords'), nltk.download('averaged_perceptron_tagger'), nltk.download('universal_tagset')]
+stop_words_nltk=nltk.corpus.stopwords.words('english')
+#print(stop_words_nltk)
+import sklearn
+stop_words_sklearn = TfidfVectorizer(stop_words='english').get_stop_words()
+#print(stop_words_sklearn)
 np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
+
+stop_words_nltk.extend(['also','semi','non','et','al','one','six','like','pre','ltd','sa','SA','copyright','eg','etc','two','de','g','kg','mg','mv','km','km2','cm','bpd','bbl','elsevier','cu','ca','mday','yr','per','inc'])
+# false positives: Cu, Ca
 
 # w2v:
 # 42123456 (8,5)
@@ -34,8 +45,11 @@ np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very pers
 # tfidf (reduzido):
 # 42 (4,4) cent_select=false
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 4,4
-RNG_SEED=42
-VECTORIZATION='w2v'
+RNG_SEED=423
+VECTORIZATION='tfidf'
+#vec_kwargs = Bunch(min_df=4, max_df=0.98, stop_words='english')
+vec_kwargs = Bunch(min_df=4, stop_words=stop_words_nltk, lowercase=False)
+
 W2V_DIM=100
 ALG='nbvd'
 ATTEMPTS_MAX=1
@@ -45,10 +59,10 @@ LABEL_CHECK = True
 CENTROID_CHECK = True
 COCLUSTER_CHECK = True
 NORM_PLOT = False # (NBVD) display norm plot
-CENTROID_SELECTION=True
+CENTROID_SELECTION=False
 rerun_embedding=True
 MOVIE=False
-ASPECT_RATIO=1/6 # 1/6 for w2v; 10 for full tfidf; 4 for partial
+ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 
 
 
@@ -119,19 +133,27 @@ def dict_from_pretrained_model(path_to_embedding_file, relevant_words):
 
 class FullModel:
     pass
-exp_numbers = re.compile("\d+")
-exp_non_alpha = re.compile("[^A-Za-zÀàÁáÂâÃãÉéÊêÍíÓóÔôÕõÚúÇç1 -]+")
+exp_numbers = re.compile("[^A-Za-z]\d+\.\d+|[^A-Za-z]\d+\,\d+|[^A-Za-z]\d+")
+exp_non_alpha = re.compile("[^A-Za-zÀàÁáÂâÃãÉéÊêÍíÓóÔôÕõÚúÇç02-9 \-–+]+")
 exp_whitespace = re.compile("\s+")
 
-# no overly small abstracts (all greater than 300 characters); 
+# NOTES: no overly small abstracts (all greater than 300 characters); 
 # some duplicates (in the abstract column)
 class Preprocessor:
+    def lower_but_keep_acronyms (s):
+        new = []
+        for w in s.split(" "):
+            new.append(w if w.isupper() and len(w) >= 2 else w.lower())
+        return " ".join(new)
+
     def preprocess (self, sentence):
         new_sentence = sentence
-        new_sentence = re.sub(exp_numbers, "1", new_sentence)
-        new_sentence = re.sub(exp_non_alpha, " ", new_sentence)
+        new_sentence = Preprocessor.lower_but_keep_acronyms(new_sentence)
+        new_sentence = re.sub(exp_numbers, " 1", new_sentence)
+        new_sentence = re.sub(exp_non_alpha, "", new_sentence)
+        # new_sentence = re.sub("-", "_", new_sentence) # keep compound words in tokenization
         new_sentence = re.sub(exp_whitespace, " ", new_sentence)
-        return new_sentence.lower()
+        return new_sentence
 
     def fit(self, X, y=None, **fit_params):
         return self
@@ -212,7 +234,7 @@ def cluster_summary (data, original_data, vec, model, logger=None):
     row_cluster_representatives = get_representatives(data, model.row_labels_, row_centroids, 
         assoc_shape[0], n_representatives=3)
     col_cluster_representatives = get_representatives(data.T, model.column_labels_, col_centroids, 
-        assoc_shape[1], n_representatives=10)
+        assoc_shape[1], n_representatives=300)
 
     ## TODO: check for relevant cocluster?
     # documents
@@ -236,8 +258,67 @@ def cluster_summary (data, original_data, vec, model, logger=None):
             print_or_log(*to_print, sep=", ")
             print_or_log("--------------------------------------------------------\n")
 
+def do_vectorization (new_abstracts, vectorization_type, **kwargs):
+    if vectorization_type == 'tfidf':
+        vec = TfidfVectorizer(**kwargs)
+        data = vec.fit_transform(new_abstracts).toarray()
+    elif vectorization == 'count':
+        vec = CountVectorizer(**kwargs)
+        data = vec.fit_transform(new_abstracts).toarray()
+    elif vectorization_type == 'tfidf-char':
+        #vec = TfidfVectorizer(ngram_range=(5,5), analyzer='char', max_features=15000)
+        vec = TfidfVectorizer(ngram_range=(5,5), analyzer='char')
+        data = vec.fit_transform(new_abstracts).toarray()
+    elif vectorization_type == 'w2v' or vectorization_type == 'pretrained':
+        embedding_dump_name = ".embedding_cache/pira.w2v" if vectorization_type == 'w2v' else ".embedding_cache/pretrained.w2v"
+        vec = CountVectorizer()
+        tok = vec.build_tokenizer()
+        tokenize_sentence_array = lambda sentences: [tok(sentence) for sentence in sentences]
+        tok_sentences = tokenize_sentence_array(new_abstracts) # frases tokenizadas (iteravel de iteraveis)
+        if rerun_embedding or not os.path.isfile(embedding_dump_name):
+            if vectorization_type == 'w2v':
+                # NOTE: min_count=1 is not the default >:) exhilarating!
+                full_model = Word2Vec(sentences=tok_sentences, vector_size=W2V_DIM, min_count=1, sg=0, window=5, workers=1, seed=42) # ligeiramente melhor mas mt pouco
+                full_model.save(embedding_dump_name)
+            elif vectorization_type == 'pretrained':
+                vec.fit(new_abstracts)
+                full_model = FullModel() # lambdas cannot be pickled apparently
+                full_model.isPreTrained = True
+                full_model.vocabulary = set(vec.vocabulary_.keys())
+                full_model.word_to_vec_dict = dict_from_pretrained_model(path_to_embedding_file="pre-trained/cc.en.300.vec", relevant_words=full_model.vocabulary)
+                with open(embedding_dump_name, "wb") as f:
+                    pickle.dump(full_model, f)
+        else:
+            if vectorization_type == 'w2v':
+                full_model = Word2Vec.load(embedding_dump_name, mmap='r')
+            elif vectorization_type == 'pretrained':
+                with open(embedding_dump_name, "rb") as f:
+                    full_model = pickle.load(f)
+        if vectorization_type == 'w2v':
+            full_model.isPreTrained = False
+        vec = full_model
+        data = w2v_combine_sentences(tok_sentences, full_model, method='tfidf')
+        
+    elif vectorization_type == 'd2v':
+        embedding_dump_name = ".embedding_cache/pira.d2v"
+        tok = CountVectorizer().build_tokenizer()
+        tokenize_sentence_array = lambda sentences: [tok(sentence) for sentence in sentences]
+        tok_sentences = tokenize_sentence_array(new_abstracts) # frases tokenizadas (iteravel de iteraveis)
+        if rerun_embedding or not os.path.isfile(embedding_dump_name):
+            # NOTE: min_count=1 is not the default >:) exhilarating!
+            documents = [TaggedDocument(sentence, [i]) for i,sentence in enumerate(tok_sentences)]
+            doc_vector_size = 1*W2V_DIM
+            full_model = Doc2Vec(documents=documents, vector_size=doc_vector_size, min_count=1, dm=0, window=5, workers=1, seed=42) # ligeiramente melhor mas mt pouco
+            full_model.save(embedding_dump_name)
+        else:
+            full_model = Doc2Vec.load(embedding_dump_name, mmap='r')
+        vec = full_model
+        data = w2v_combine_sentences(tok_sentences, full_model, isDoc2Vec=True)
+
+    return (data, vec)
+
 def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
-        show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None):
+        show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None, iter_max=2000):
     RNG = np.random.default_rng(RNG_SEED)
     if logger:
         logger.info(f"shape: {data.shape}")
@@ -254,8 +335,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     # do co-clustering
     if alg == 'nbvd':
         model = NBVD_coclustering(data, symmetric=SYMMETRIC, n_row_clusters=N_ROW_CLUSTERS, 
-            n_col_clusters=N_COL_CLUSTERS, n_attempts=1, random_state=RNG_SEED, 
-            verbose=True, save_history=MOVIE, save_norm_history=NORM_PLOT, logger=logger)
+            n_col_clusters=N_COL_CLUSTERS, n_attempts=1, iter_max=iter_max, random_state=RNG_SEED, 
+            verbose=False, save_history=MOVIE, save_norm_history=NORM_PLOT, logger=logger)
     elif alg == 'wbkm':
         model = wbkm.WBKM_coclustering(data, n_clusters=N_ROW_CLUSTERS, n_attempts=1,
             random_state=RNG_SEED, verbose=True, logger=logger)
@@ -280,6 +361,14 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     ### internal indices
     # print silhouette scores
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
+    
+    """ ## DBG
+    data2 = np.array(data, dtype=bool)
+    silhouette2 = print_silhouette_score(data2, model.row_labels_, model.column_labels_, logger=logger)
+    print("normal:", silhouette, "| média:",MeanTuple(*silhouette).mean)
+    print("binário:", silhouette2, "| média:", MeanTuple(*silhouette2).mean)
+    return
+    """
 
     # textual analysis
     cluster_summary (data, original_data, vectorization, model, logger=None)
@@ -355,7 +444,6 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
     elif alg == 'kmeans':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
-
     return bunch
 
 def main():
@@ -363,70 +451,16 @@ def main():
     RNG, RNG_SEED = start_default_rng(seed=RNG_SEED)
     np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
-    #read
+    # read and process
     df = pd.read_csv('pira.csv', delimiter=';')
     scientific = df[df['corpus'] == 1]
     abstracts = scientific['abstract']
     new_abstracts = Preprocessor().transform(abstracts)
 
     os.makedirs('.embedding_cache', exist_ok=True)
-    if VECTORIZATION == 'tfidf':
-        # DBG: possibly dont restrict vocabulary?
-        #vec = TfidfVectorizer()
-        vec = TfidfVectorizer(min_df=4, max_df=0.98, max_features=2000)
-        data = vec.fit_transform(new_abstracts).toarray()
-    elif VECTORIZATION == 'tfidf-char':
-        vec = TfidfVectorizer(ngram_range=(5,5), analyzer='char')
-        data = vec.fit_transform(new_abstracts).toarray()
-    elif VECTORIZATION == 'w2v' or VECTORIZATION == 'pretrained':
-        embedding_dump_name = ".embedding_cache/pira.w2v" if VECTORIZATION == 'w2v' else ".embedding_cache/pretrained.w2v"
-        vec = CountVectorizer()
-        tok = vec.build_tokenizer()
-        tokenize_sentence_array = lambda sentences: [tok(sentence) for sentence in sentences]
-        tok_sentences = tokenize_sentence_array(new_abstracts) # frases tokenizadas (iteravel de iteraveis)
-        if rerun_embedding or not os.path.isfile(embedding_dump_name):
-            if VECTORIZATION == 'w2v':
-                # NOTE: min_count=1 is not the default >:) exhilarating!
-                full_model = Word2Vec(sentences=tok_sentences, vector_size=W2V_DIM, min_count=1, sg=0, window=5, workers=1, seed=42) # ligeiramente melhor mas mt pouco
-                full_model.save(embedding_dump_name)
-            elif VECTORIZATION == 'pretrained':
-                vec.fit(new_abstracts)
-                full_model = FullModel() # lambdas cannot be pickled apparently
-                full_model.isPreTrained = True
-                full_model.vocabulary = set(vec.vocabulary_.keys())
-                full_model.word_to_vec_dict = dict_from_pretrained_model(path_to_embedding_file="pre-trained/cc.en.300.vec", relevant_words=full_model.vocabulary)
-                with open(embedding_dump_name, "wb") as f:
-                    pickle.dump(full_model, f)
-        else:
-            if VECTORIZATION == 'w2v':
-                full_model = Word2Vec.load(embedding_dump_name, mmap='r')
-            elif VECTORIZATION == 'pretrained':
-                with open(embedding_dump_name, "rb") as f:
-                    full_model = pickle.load(f)
-        if VECTORIZATION == 'w2v':
-            full_model.isPreTrained = False
-        vec = full_model
-        data = w2v_combine_sentences(tok_sentences, full_model, method='tfidf')
-        
-    elif VECTORIZATION == 'd2v':
-        embedding_dump_name = ".embedding_cache/pira.d2v"
-        tok = CountVectorizer().build_tokenizer()
-        tokenize_sentence_array = lambda sentences: [tok(sentence) for sentence in sentences]
-        tok_sentences = tokenize_sentence_array(new_abstracts) # frases tokenizadas (iteravel de iteraveis)
-        if rerun_embedding or not os.path.isfile(embedding_dump_name):
-            # NOTE: min_count=1 is not the default >:) exhilarating!
-            documents = [TaggedDocument(sentence, [i]) for i,sentence in enumerate(tok_sentences)]
-            doc_vector_size = 1*W2V_DIM
-            full_model = Doc2Vec(documents=documents, vector_size=doc_vector_size, min_count=1, dm=0, window=5, workers=1, seed=42) # ligeiramente melhor mas mt pouco
-            full_model.save(embedding_dump_name)
-        else:
-            full_model = Doc2Vec.load(embedding_dump_name, mmap='r')
-        vec = full_model
-        data = w2v_combine_sentences(tok_sentences, full_model, isDoc2Vec=True)
-
-    print("shape, type:", data.shape, type(data))
-
     # do co-clustering
+    data, vec = do_vectorization(new_abstracts, VECTORIZATION, **vec_kwargs)
+
     if ATTEMPTS_MAX > 1:
         attempt = 0
         while attempt < ATTEMPTS_MAX:
@@ -439,7 +473,37 @@ def main():
             finally:
                 attempt += 1
     else:
-        do_task_single(data, new_abstracts, vec, alg=ALG, RNG_SEED=RNG_SEED)
+        do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED)
 
+    """
+    import itertools
+    def dict_product(dicts):
+        return (dict(zip(dicts, x)) for x in itertools.product(*dicts.values()))
+
+    vec_options = ['count']
+    iter_max_options = [2000, 10000]
+    vec_kwargs_options = list(dict_product(dict(stop_words=["english", None], min_df=[1, 10], max_df=[1.0, 0.9], max_features=[1000, 2500, 5000, 10000])))
+    full_options = [(vec, vec_kwargs, iter_max) for vec in vec_options for vec_kwargs in vec_kwargs_options for iter_max in iter_max_options]
+    for vectorization, vec_kwargs, iter_max in full_options:
+        print("------------------------------------------------------------")
+        print(f"options:\nvectorizer: {vectorization}\nvec_kwargs: {vec_kwargs}\niter_max: {iter_max}")
+        data, vec = do_vectorization(new_abstracts, VECTORIZATION, **vec_kwargs)
+
+        os.makedirs('.embedding_cache', exist_ok=True)
+        # do co-clustering
+        if ATTEMPTS_MAX > 1:
+            attempt = 0
+            while attempt < ATTEMPTS_MAX:
+                try:
+                    results = do_task_single(data, new_abstracts, vec, only_one = False, alg=ALG, RNG_SEED=RNG_SEED+attempt)
+                    plt.pause(25)
+                except Exception as e:
+                    print(str(e))
+                    time.sleep(2)
+                finally:
+                    attempt += 1
+        else:
+            do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=iter_max, RNG_SEED=RNG_SEED)
+    """
 if __name__ == "__main__":
     main()

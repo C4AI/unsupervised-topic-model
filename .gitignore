@@ -11,4 +11,6 @@ commons.py
 generateSyntheticData_mod.py
 nohup.out
 *.csv*
+*.xlsx*
+*.txt
 pira.ipynb
