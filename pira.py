@@ -30,15 +30,16 @@ from my_utils import *
 
 #downloads = [nltk.download('stopwords'), nltk.download('averaged_perceptron_tagger'), nltk.download('universal_tagset')]
 stop_words_nltk=nltk.corpus.stopwords.words('english')
-#print(stop_words_nltk)
 import sklearn
-stop_words_sklearn = TfidfVectorizer(stop_words='english').get_stop_words()
-#print(stop_words_sklearn)
 np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
-stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre','ltd','sa','SA','copyright','eg','etc','de','g','kg','mg','mv','km','km2','cm','bpd','bbl','elsevier','cu','ca','mday','yr','per','inc'])
+stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre','post', # preffixes
+    'ltd','sa','SA','copyright','eg','etc','elsevier','inc', # copyright
+    'g','kg','mg','mv','km','km2','cm','bpd','bbl','cu','ca','mday','yr','per', # units
+    'one','two','three','four','five','six','seven','eight','nine','ten','de','within','previously','across','top','may','mainly','thus','highly','due','including','along','since','many','various','however','could', # misc 1
+    'end','less','able','according','include','included','around','last','first','major','set','average','total','new','based','different','main','associated','related', # misc 2
+    'study','research','paper','suggests','suggest','indicate','indicates','results','present','licensee','authors']) # research jargon
 # false positives: Cu, Ca
-# within, numeros, across, top, previously
 
 # w2v:
 # 42123456 (8,5)
@@ -64,7 +65,7 @@ CENTROID_SELECTION=False
 rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-
+SHOW_IMAGES=False
 
 
 ############################################################################## 
@@ -178,7 +179,7 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
         if count >= n_representatives:
             return # stop yielding
 
-def get_representatives (data, labels, centroids, n_clusters, n_representatives=3, reverse=False):
+def get_representatives (data, labels, centroids, n_clusters, n_representatives=3, reverse=False) -> dict:
     cluster_representatives = {}
     if CENTROID_SELECTION:
         all_distances = np.zeros((data.shape[0], n_clusters))
@@ -235,9 +236,9 @@ def cluster_summary (data, original_data, vec, model, logger=None):
     
     # get representatives
     row_cluster_representatives = get_representatives(data, model.row_labels_, row_centroids, 
-        assoc_shape[0], n_representatives=3)
+        assoc_shape[0], n_representatives=5)
     col_cluster_representatives = get_representatives(data.T, model.column_labels_, col_centroids, 
-        assoc_shape[1], n_representatives=100)
+        assoc_shape[1], n_representatives=30)
 
     # documents
     print_or_log("DOCUMENTS:\n")
@@ -262,31 +263,39 @@ def cluster_summary (data, original_data, vec, model, logger=None):
         
         print("COCLUSTERS:")
         N = 50
+        # TODO: do top 10% / 20% / 25% instead?
         print(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
-        row_reps_top10 = get_representatives(data, model.row_labels_, row_centroids, 
+        row_reps_topN = get_representatives(data, model.row_labels_, row_centroids, 
             assoc_shape[0], n_representatives=N)
-        row_reps_bottom10 = get_representatives(data, model.row_labels_, row_centroids, 
+        row_reps_bottomN = get_representatives(data, model.row_labels_, row_centroids, 
             assoc_shape[0], n_representatives=N, reverse=True)
+        
+        # for each cocluster
         for dc, wc in relevant_coclusters:
             print("cocluster:", (dc, wc),"\n")
             to_print = []
-            for i, reps in col_cluster_representatives.items():
-                if i == wc:
-                    for w in reps:
-                        try:
-                            word = idx_to_word[w]
-                            oc_top = calculate_occurrence(word, original_data, row_reps_top10[dc])
-                            oc_bottom = calculate_occurrence(word, original_data, row_reps_bottom10[dc])
-                            oc_other1 = calculate_occurrence(word, original_data, row_reps_top10[(dc+1)%k])
-                            oc_other2 = calculate_occurrence(word, original_data, row_reps_top10[(dc+2)%k])
-                            oc_other3 = calculate_occurrence(word, original_data, row_reps_top10[(dc+3)%k])
-
-                            to_print.append(f"{word}({oc_top*100/N:.0f}%)({oc_bottom*100/N:.0f}%) ({oc_other1*100/N:.0f}%)({oc_other2*100/N:.0f}%)({oc_other3*100/N:.0f}%)")
-                        except Exception as e:
-                            print(str(e))
-                    break
-                else:
+            reps = col_cluster_representatives[wc] # get the representatives for the word cluster
+            
+            # for each word, calculate its occurrence in each document cluster
+            for w in reps:
+                if dc not in row_reps_topN:
+                    print(f"## @#@ #@ {dc} not in row_reps!!!\n")
                     continue
+                else:
+                    # occurrence for the dc in the cocluster
+                    word = idx_to_word[w]
+                    oc_top = calculate_occurrence(word, original_data, row_reps_topN[dc])
+                    oc_bottom = calculate_occurrence(word, original_data, row_reps_bottomN[dc])
+                    
+                    # occurrence for other dcs
+                    oc_others = []
+                    for r_idx in sorted(row_reps_topN.keys()):
+                        if r_idx == dc:
+                            continue
+                        oc_other = calculate_occurrence(word, original_data, row_reps_topN[r_idx])
+                        oc_others.append((r_idx, oc_other))
+                    oc_other_str = "".join([f"({r_idx}:{oc_other*100/N:.0f}%)" for r_idx,oc_other in oc_others])
+                    to_print.append(f"{word}(T:{oc_top*100/N:.0f}%)(B:{oc_bottom*100/N:.0f}%) {oc_other_str}")
             print(", ".join(to_print), end="\n--------------------------------------------------------\n\n")
 
 def do_vectorization (new_abstracts, vectorization_type, **kwargs):
@@ -392,14 +401,6 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     ### internal indices
     # print silhouette scores
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
-    
-    """ ## DBG
-    data2 = np.array(data, dtype=bool)
-    silhouette2 = print_silhouette_score(data2, model.row_labels_, model.column_labels_, logger=logger)
-    print("normal:", silhouette, "| média:",MeanTuple(*silhouette).mean)
-    print("binário:", silhouette2, "| média:", MeanTuple(*silhouette2).mean)
-    return
-    """
 
     # textual analysis
     cluster_summary (data, original_data, vectorization, model, logger=None)
@@ -459,10 +460,6 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
             names = ["Original dataset", "Reconstructed matrix USV.T", "Block value matrix S"]
         plot_matrices(to_plot, names, timer = None if only_one else 2*timer, aspect_ratio=ASPECT_RATIO)
 
-    """
-    # textual analysis
-    cluster_summary (data, original_data, vec, model, logger=None)"""
-
     # return general statistics
     if alg == 'nbvd':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
@@ -475,7 +472,36 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
     elif alg == 'kmeans':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
-    return bunch
+    return (model, bunch)
+
+def load_new_new_abstracts (path, n_abstracts, old_abstracts):
+    old_abstracts_S = set(old_abstracts)
+    df = pd.read_csv(path, delimiter=',')
+    new_new_abstracts = df['abstract'][:n_abstracts].to_list()
+    new_new_not_repeat = [ab for ab in new_new_abstracts if ab not in old_abstracts_S]
+    print(f"\nnew abstracts: {len(new_new_abstracts)} | repeat abstracts: {len(new_new_abstracts) - len(new_new_not_repeat)}")
+    return Preprocessor().transform(new_new_not_repeat) # preprocess and eliminate duplicates
+
+def test_new_abstracts (extra_abstracts : Iterable, vec, model, logger=None):
+    print_or_log = logger.info if logger else print
+    row_centroids = model.centroids[0]
+    m, k = row_centroids.shape
+    Z = vec.transform(extra_abstracts).toarray()
+    n, _ = Z.shape
+    print_or_log(Z.shape, row_centroids.shape)
+
+    Z_row_extra_a = Z.reshape(*Z.shape, 1) # add extra dim for clusters
+    Z_row_extra = Z_row_extra_a.repeat(k, axis=2)
+    c_row_extra = row_centroids.T.reshape(k, m, 1).repeat(n, axis=2).T # add extra dim for number of samples
+    row_distances = norm(Z_row_extra-c_row_extra, axis=1)
+    row_classification = np.argmin(row_distances, axis=1)
+
+    print_or_log("\nNEW ABSTRACTS (assigned cluster and (clipped) text):")
+    to_print = []
+    for i,row in enumerate(extra_abstracts):
+        to_print.append(f"[{row_classification[i]}]: {row[:200]}\n\n")
+    print_or_log("".join(to_print))
+    return row_classification
 
 def main():
     global RNG_SEED
@@ -496,7 +522,7 @@ def main():
         attempt = 0
         while attempt < ATTEMPTS_MAX:
             try:
-                results = do_task_single(data, new_abstracts, vec, only_one = False, alg=ALG, RNG_SEED=RNG_SEED+attempt)
+                results = do_task_single(data, new_abstracts, vec, only_one = False, alg=ALG, RNG_SEED=RNG_SEED+attempt, show_images=SHOW_IMAGES)
                 plt.pause(25)
             except Exception as e:
                 print(str(e))
@@ -504,8 +530,9 @@ def main():
             finally:
                 attempt += 1
     else:
-        do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED)
-
+        model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
+        new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 20, abstracts)
+        test_new_abstracts(new_new_abstracts, vec, model)
     """
     import itertools
     def dict_product(dicts):

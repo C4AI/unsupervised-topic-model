@@ -5,6 +5,7 @@ __pycache__/
 archive/
 synthetic/
 pre-trained
+pira_informacoes
 
 algorithms.py
 commons.py
