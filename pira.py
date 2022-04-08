@@ -37,8 +37,9 @@ stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre'
     'ltd','sa','SA','copyright','eg','etc','elsevier','inc', # copyright
     'g','kg','mg','mv','km','km2','cm','bpd','bbl','cu','ca','mday','yr','per', # units
     'one','two','three','four','five','six','seven','eight','nine','ten','de','within','previously','across','top','may','mainly','thus','highly','due','including','along','since','many','various','however','could', # misc 1
-    'end','less','able','according','include','included','around','last','first','major','set','average','total','new','based','different','main','associated','related', # misc 2
-    'study','research','paper','suggests','suggest','indicate','indicates','results','present','licensee','authors']) # research jargon
+    'end','less','able','according','include','included','around','last','first','major','set','average','total','new','based','different','main','associated','related','regarding','approximately','others', # misc 2
+    'likely','later','would','together','even', # misc 3
+    'study','studies','research','paper','suggests','suggest','indicate','indicates','show','shows','results','present','presents','considering','proposed','discussed','licensee','authors','aims',]) # research jargon
 # false positives: Cu, Ca
 
 # w2v:
@@ -136,8 +137,9 @@ def dict_from_pretrained_model(path_to_embedding_file, relevant_words):
 class FullModel:
     pass
 exp_numbers = re.compile("[^A-Za-z]\d+\.\d+|[^A-Za-z]\d+\,\d+|[^A-Za-z]\d+")
-exp_non_alpha = re.compile("[^A-Za-zÀàÁáÂâÃãÉéÊêÍíÓóÔôÕõÚúÇç02-9 \-–+]+")
+exp_non_alpha = re.compile("[^A-Za-zÀàÁáÂâÃãÉéÊêÍíÓóÔôÕõÚúÇç02-9 \_–+]+")
 exp_whitespace = re.compile("\s+")
+exp_hyphen = re.compile("(?<=[a-z])\-(?=[a-z])")
 
 # NOTES: no overly small abstracts (all greater than 300 characters); 
 # some duplicates (in the abstract column)
@@ -151,9 +153,9 @@ class Preprocessor:
     def preprocess (self, sentence):
         new_sentence = sentence
         new_sentence = Preprocessor.lower_but_keep_acronyms(new_sentence)
+        new_sentence = re.sub(exp_hyphen, "_", new_sentence) # keep compound words in tokenization
         new_sentence = re.sub(exp_numbers, " 1", new_sentence)
         new_sentence = re.sub(exp_non_alpha, "", new_sentence)
-        # new_sentence = re.sub("-", "_", new_sentence) # keep compound words in tokenization
         new_sentence = re.sub(exp_whitespace, " ", new_sentence)
         return new_sentence
 
