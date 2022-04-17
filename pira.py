@@ -62,11 +62,11 @@ LABEL_CHECK = True
 CENTROID_CHECK = True
 COCLUSTER_CHECK = True
 NORM_PLOT = False # (NBVD) display norm plot
-CENTROID_SELECTION=False
+CENTROID_CANDIDATE_SELECTION=False
 rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=False
+SHOW_IMAGES=True
 
 
 ############################################################################## 
@@ -183,7 +183,7 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
 
 def get_representatives (data, labels, centroids, n_clusters, n_representatives=3, reverse=False) -> dict:
     cluster_representatives = {}
-    if CENTROID_SELECTION:
+    if CENTROID_CANDIDATE_SELECTION:
         all_distances = np.zeros((data.shape[0], n_clusters))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid) for centroid in centroids.T]
@@ -196,7 +196,8 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
                 cluster_avgs[label] = []
             cluster_avgs[label].append(data[r])
         for k in cluster_avgs.keys():
-            cluster_avgs[k] = np.sum(cluster_avgs[k]) / len(cluster_avgs[k])
+            #cluster_avgs[k] = np.sum(cluster_avgs[k]) / len(cluster_avgs[k]) # ??
+            cluster_avgs[k] = np.mean(cluster_avgs[k])
 
         ord_clusters = [t[1] for t in sorted(cluster_avgs.items())] # len might be ower than n_clusters
         all_distances = np.zeros((data.shape[0], len(ord_clusters)))
@@ -405,7 +406,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
     # textual analysis
-    cluster_summary (data, original_data, vectorization, model, logger=None)
+    #cluster_summary (data, original_data, vectorization, model, logger=None)
 
     ### DBG: testing different methods of labelling
     if alg == 'nbvd':
@@ -444,8 +445,9 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         # centroid (and dataset) (normalized) scatter plot
         if CENTROID_CHECK and alg == 'nbvd':
             row_centroids, col_centroids = model.centroids[0], model.centroids[1]
-            centroid_scatter_plot(data, row_centroids, model.row_labels_, kind="row", RNG=RNG)
-            centroid_scatter_plot(data.T, col_centroids, model.column_labels_, kind="col", RNG=RNG)
+            model.row_pca, model.row_c_palette = centroid_scatter_plot(data, row_centroids, model.row_labels_, kind="row", RNG=RNG)
+            model.col_pca, _ = centroid_scatter_plot(data.T, col_centroids, model.column_labels_, kind="col", RNG=RNG)
+        
         # norm evolution
         if hasattr(model, "norm_history"):
             plot_norm_history(model)
@@ -484,13 +486,13 @@ def load_new_new_abstracts (path, n_abstracts, old_abstracts):
     print(f"\nnew abstracts: {len(new_new_abstracts)} | repeat abstracts: {len(new_new_abstracts) - len(new_new_not_repeat)}")
     return Preprocessor().transform(new_new_not_repeat) # preprocess and eliminate duplicates
 
-def test_new_abstracts (extra_abstracts : Iterable, vec, model, logger=None):
+def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=None, verbose=False):
     print_or_log = logger.info if logger else print
     row_centroids = model.centroids[0]
     m, k = row_centroids.shape
     Z = vec.transform(extra_abstracts).toarray()
     n, _ = Z.shape
-    print_or_log(Z.shape, row_centroids.shape)
+    print_or_log(f"Z: {Z.shape} centroids: {row_centroids.shape}")
 
     Z_row_extra_a = Z.reshape(*Z.shape, 1) # add extra dim for clusters
     Z_row_extra = Z_row_extra_a.repeat(k, axis=2)
@@ -498,12 +500,14 @@ def test_new_abstracts (extra_abstracts : Iterable, vec, model, logger=None):
     row_distances = norm(Z_row_extra-c_row_extra, axis=1)
     row_classification = np.argmin(row_distances, axis=1)
 
-    print_or_log("\nNEW ABSTRACTS (assigned cluster and (clipped) text):")
-    to_print = []
-    for i,row in enumerate(extra_abstracts):
-        to_print.append(f"[{row_classification[i]}]: {row[:200]}\n\n")
-    print_or_log("".join(to_print))
-    return row_classification
+    # command-line results
+    if verbose:
+        print_or_log("\nNEW ABSTRACTS (assigned cluster and (clipped) text):")
+        to_print = []
+        for i,row in enumerate(extra_abstracts):
+            to_print.append(f"[{row_classification[i]}]: {row[:200]}\n\n")
+        print_or_log("".join(to_print))
+    return (Z, row_classification)
 
 def main():
     global RNG_SEED
@@ -533,8 +537,41 @@ def main():
                 attempt += 1
     else:
         model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
-        new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 20, abstracts)
-        test_new_abstracts(new_new_abstracts, vec, model)
+        # analyze new abstracts
+        new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 532+13, abstracts)
+        Z, new_abs_classification = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
+        if SHOW_IMAGES:
+            row_centroids = model.centroids[0]
+            print(f"@ Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
+            centroid_scatter_plot(Z, row_centroids, new_abs_classification, kind="row", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
+            plt.show()
+        
+
+        # TODO: CLEAN UP
+        """
+        cluster_avgs = {}
+        for r, label in enumerate(new_abs_classification):
+            if label not in cluster_avgs:
+                cluster_avgs[label] = []
+            cluster_avgs[label].append(Z[r])
+        for k in cluster_avgs.keys():
+            cluster_avgs[k] = np.mean(cluster_avgs[k])
+        
+        cluster_avgs_orig = {}
+        for r, label in enumerate(model.row_labels_):
+            if label not in cluster_avgs_orig:
+                cluster_avgs_orig[label] = []
+            cluster_avgs_orig[label].append(model.data[r])
+        for k in cluster_avgs_orig.keys():
+            cluster_avgs_orig[k] = np.mean(cluster_avgs_orig[k])
+
+        total_dist = 0
+        for i, avg in cluster_avgs.items():
+            total_dist += abs(avg - cluster_avgs_orig[i])
+        print(total_dist)
+        """
+        
+
     """
     import itertools
     def dict_product(dicts):

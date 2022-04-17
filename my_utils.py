@@ -333,8 +333,10 @@ def shade_coclusters (data, row_col_labels : Tuple[int], cluster_assoc, RNG=None
     labels, handles = list(zip(*legend_dict.items()))
     plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
 
-def centroid_scatter_plot (samples, centroids, labels, kind, RNG=None):
+def centroid_scatter_plot (samples, centroids, labels, kind, pca=None, RNG=None, palette=None):
     RNG = RNG or np.random.default_rng()
+    # seed = RNG.integers(0, 2147483647) #DBG: better colors not doing an additional call to RNG
+
     _, n = centroids.shape
     if kind == "row":
         points = normalize(np.vstack([samples, centroids.T]), axis=1)
@@ -342,13 +344,15 @@ def centroid_scatter_plot (samples, centroids, labels, kind, RNG=None):
     elif kind == "col":
         points = normalize(np.vstack([samples, centroids.T]), axis=1)
         title = "Column centroids"
-    pca = PCA(n_components=2)
     #pca = TruncatedSVD(n_components=2)
     #pca = KernelPCA(n_components=2)
-    reduced_points = pca.fit_transform(points)
+    if not pca:
+        pca = PCA(n_components=2, random_state=42)
+        pca.fit(points)
+    reduced_points = pca.transform(points)
     #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
     #print("reduced_points:", reduced_points.shape)
-    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+    palette = palette if (not palette is None) else RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
     colors = [palette[label] for label in labels]
 
 
@@ -362,6 +366,8 @@ def centroid_scatter_plot (samples, centroids, labels, kind, RNG=None):
     ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
     ax.legend(things, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
     plt.title(title)
+
+    return (pca, palette)
 
 def plot_norm_history (model):
     y = model.norm_history
