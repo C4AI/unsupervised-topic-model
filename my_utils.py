@@ -333,17 +333,24 @@ def shade_coclusters (data, row_col_labels : Tuple[int], cluster_assoc, RNG=None
     labels, handles = list(zip(*legend_dict.items()))
     plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
 
-def centroid_scatter_plot (samples, centroids, labels, kind, pca=None, RNG=None, palette=None):
+def get_centroids_by_cluster (data, labels, n_clusters):
+    n_smp, n_dim = data.shape
+    centroids = np.zeros((n_dim, n_clusters), dtype=np.float64)
+
+    for k in range(n_clusters):
+        mask = (labels == k)
+        centroids[:, k] = np.mean(data[mask, :], axis=0)
+    return centroids
+
+def centroid_scatter_plot (samples, centroids, labels, title, pca=None, palette=None, RNG=None):
+    """Dimension-reduced plot of samples and centroids, coloring points according to labels.
+    """
     RNG = RNG or np.random.default_rng()
     # seed = RNG.integers(0, 2147483647) #DBG: better colors not doing an additional call to RNG
+    # TODO: kind should be just a title string
 
     _, n = centroids.shape
-    if kind == "row":
-        points = normalize(np.vstack([samples, centroids.T]), axis=1)
-        title = "Row centroids"
-    elif kind == "col":
-        points = normalize(np.vstack([samples, centroids.T]), axis=1)
-        title = "Column centroids"
+    points = normalize(np.vstack([samples, centroids.T]), axis=1) # normalize before PCA
     #pca = TruncatedSVD(n_components=2)
     #pca = KernelPCA(n_components=2)
     if not pca:
@@ -355,8 +362,9 @@ def centroid_scatter_plot (samples, centroids, labels, kind, pca=None, RNG=None,
     palette = palette if (not palette is None) else RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
     colors = [palette[label] for label in labels]
 
-
-    fig, ax = plt.subplots()
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 21, (1,18)) # make a subplot that spans the left-side (n-1)/n of the figure.
+    
     # plot centroids in a way that allows us to label them
     things = []
     for i in range(n):
@@ -364,10 +372,10 @@ def centroid_scatter_plot (samples, centroids, labels, kind, pca=None, RNG=None,
         thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=400, alpha=0.8)
         things.append(thing)
     ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
-    ax.legend(things, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
+    legend = ax.legend(things, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
+    plt.gca().add_artist(legend) # manually add legend so we can add new legends later
     plt.title(title)
-
-    return (pca, palette)
+    return (pca, palette, ax)
 
 def plot_norm_history (model):
     y = model.norm_history

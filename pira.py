@@ -4,6 +4,7 @@ import numpy as np
 from numpy.linalg import inv, norm
 from numpy.random import default_rng
 from matplotlib import pyplot as plt
+import matplotlib.lines as mlines
 import pandas as pd
 from gensim.models import Word2Vec, KeyedVectors, Doc2Vec
 from gensim.models.doc2vec import TaggedDocument
@@ -62,11 +63,12 @@ LABEL_CHECK = True
 CENTROID_CHECK = True
 COCLUSTER_CHECK = True
 NORM_PLOT = False # (NBVD) display norm plot
+LABELING_METHOD="centroids method" # TODO: implement changing to not fancy
 CENTROID_CANDIDATE_SELECTION=False
 rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=True
+SHOW_IMAGES=False
 
 
 ############################################################################## 
@@ -197,6 +199,7 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
             cluster_avgs[label].append(data[r])
         for k in cluster_avgs.keys():
             #cluster_avgs[k] = np.sum(cluster_avgs[k]) / len(cluster_avgs[k]) # ??
+            # TODO: need axis argument in mean?
             cluster_avgs[k] = np.mean(cluster_avgs[k])
 
         ord_clusters = [t[1] for t in sorted(cluster_avgs.items())] # len might be ower than n_clusters
@@ -436,8 +439,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     if show_images:
         # shade lines/columns of original dataset
         if LABEL_CHECK:
-            shaded_label_matrix(data, model.row_labels_, kind="rows",method_name="rows", RNG=RNG, opacity=1, aspect_ratio=ASPECT_RATIO)
-            shaded_label_matrix(data, model.column_labels_, kind="columns",method_name="columns", RNG=RNG, opacity=1, aspect_ratio=ASPECT_RATIO)
+            shaded_label_matrix(data, model.row_labels_, kind="rows", method_name=LABELING_METHOD, RNG=RNG, opacity=1, aspect_ratio=ASPECT_RATIO)
+            shaded_label_matrix(data, model.column_labels_, kind="columns", method_name=LABELING_METHOD, RNG=RNG, opacity=1, aspect_ratio=ASPECT_RATIO)
             if COCLUSTER_CHECK and alg == "nbvd":
                 shade_coclusters(data, (model.row_labels_, model.column_labels_), 
                     model.cluster_assoc, RNG=RNG, aspect_ratio=ASPECT_RATIO)
@@ -445,8 +448,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         # centroid (and dataset) (normalized) scatter plot
         if CENTROID_CHECK and alg == 'nbvd':
             row_centroids, col_centroids = model.centroids[0], model.centroids[1]
-            model.row_pca, model.row_c_palette = centroid_scatter_plot(data, row_centroids, model.row_labels_, kind="row", RNG=RNG)
-            model.col_pca, _ = centroid_scatter_plot(data.T, col_centroids, model.column_labels_, kind="col", RNG=RNG)
+            model.row_pca, model.row_c_palette, _ = centroid_scatter_plot(data, row_centroids, model.row_labels_, title="Rows and Row centroids", RNG=RNG)
+            model.col_pca, model.col_c_palette, _ = centroid_scatter_plot(data.T, col_centroids, model.column_labels_, title="Columns and Column centroids", RNG=RNG)
         
         # norm evolution
         if hasattr(model, "norm_history"):
@@ -509,6 +512,28 @@ def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=
         print_or_log("".join(to_print))
     return (Z, row_classification)
 
+def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, RNG=None):
+    RNG = RNG or np.default_rng()
+    # calculate reduced centroids
+    row_centroids = model.centroids[0]
+    print(f"@ Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
+    _, _, ax = centroid_scatter_plot(Z, row_centroids, new_abs_classification, title="New samples and Row centroids", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
+    new_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+    new_points = normalize(new_centroids.T, axis=1)
+    reduced_new_points = model.row_pca.transform(new_points)
+
+    # plot reduced points
+    for i, r_centroid in enumerate(reduced_new_points):
+        ax.scatter(*r_centroid, color=model.row_c_palette[i], marker="*", s=700, alpha=0.8)            
+    # legends for centroid clarity
+    handles = [mlines.Line2D([], [], color='black', marker='s', linestyle='None', markersize=20),
+                mlines.Line2D([], [], color='black', marker='*', linestyle='None', markersize=20)]
+    labels = ['Original\ncentroids', 'New data\ncentroids']
+    ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
+    
+    plt.show()
+    return new_centroids
+
 def main():
     global RNG_SEED
     RNG, RNG_SEED = start_default_rng(seed=RNG_SEED)
@@ -537,39 +562,13 @@ def main():
                 attempt += 1
     else:
         model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
+        
         # analyze new abstracts
         new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 532+13, abstracts)
         Z, new_abs_classification = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
         if SHOW_IMAGES:
-            row_centroids = model.centroids[0]
-            print(f"@ Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
-            centroid_scatter_plot(Z, row_centroids, new_abs_classification, kind="row", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
-            plt.show()
-        
+            new_abs_reduced_centroids_plot(model, Z, new_abs_classification, RNG=RNG)
 
-        # TODO: CLEAN UP
-        """
-        cluster_avgs = {}
-        for r, label in enumerate(new_abs_classification):
-            if label not in cluster_avgs:
-                cluster_avgs[label] = []
-            cluster_avgs[label].append(Z[r])
-        for k in cluster_avgs.keys():
-            cluster_avgs[k] = np.mean(cluster_avgs[k])
-        
-        cluster_avgs_orig = {}
-        for r, label in enumerate(model.row_labels_):
-            if label not in cluster_avgs_orig:
-                cluster_avgs_orig[label] = []
-            cluster_avgs_orig[label].append(model.data[r])
-        for k in cluster_avgs_orig.keys():
-            cluster_avgs_orig[k] = np.mean(cluster_avgs_orig[k])
-
-        total_dist = 0
-        for i, avg in cluster_avgs.items():
-            total_dist += abs(avg - cluster_avgs_orig[i])
-        print(total_dist)
-        """
         
 
     """
