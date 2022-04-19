@@ -185,31 +185,21 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
 
 def get_representatives (data, labels, centroids, n_clusters, n_representatives=3, reverse=False) -> dict:
     cluster_representatives = {}
-    if CENTROID_CANDIDATE_SELECTION:
-        all_distances = np.zeros((data.shape[0], n_clusters))
-        for i, r in enumerate(data):
-            all_distances[i] = [norm(r-centroid) for centroid in centroids.T]
-        N = n_clusters        
+    if not CENTROID_CANDIDATE_SELECTION:
+        print("HERE\n\n")
+        centroids_ = get_centroids_by_cluster (data, labels, n_clusters)
     else:
-        # get cluster averages
-        cluster_avgs = {}
-        for r, label in enumerate(labels):
-            if label not in cluster_avgs:
-                cluster_avgs[label] = []
-            cluster_avgs[label].append(data[r])
-        for k in cluster_avgs.keys():
-            #cluster_avgs[k] = np.sum(cluster_avgs[k]) / len(cluster_avgs[k]) # ??
-            # TODO: need axis argument in mean?
-            cluster_avgs[k] = np.mean(cluster_avgs[k])
-
-        ord_clusters = [t[1] for t in sorted(cluster_avgs.items())] # len might be ower than n_clusters
-        all_distances = np.zeros((data.shape[0], len(ord_clusters)))
-        for i, r in enumerate(data):
-            all_distances[i] = [norm(r-cluster_avg) for cluster_avg in ord_clusters]
-        N = len(ord_clusters)
+        centroids_ = centroids
+    
+    # get squashed centroids and, for each sample, calculate distance to squashed_centroid
+    squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
+    print(squashed_centroids)
+    all_distances = np.zeros((data.shape[0], n_clusters))
+    for i, r in enumerate(data):
+        all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
 
     # get representatives
-    for c in range(N):
+    for c in range(n_clusters):
         dists_to_centroid = sorted(zip(list(range(data.shape[0])), list(all_distances[:,c])), 
             key = lambda t : t[1], reverse=reverse)
 
@@ -409,7 +399,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
     # textual analysis
-    #cluster_summary (data, original_data, vectorization, model, logger=None)
+    cluster_summary (data, original_data, vectorization, model, logger=None)
 
     ### DBG: testing different methods of labelling
     if alg == 'nbvd':
