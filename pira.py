@@ -35,13 +35,16 @@ import sklearn
 np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
 stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre','post', # preffixes
-    'ltd','sa','SA','copyright','eg','etc','elsevier','inc', # copyright
+    'ltd','sa','SA','copyright','eg','etc','elsevier','springer','springer_verlag','inc','publishing', # copyright
     'g','kg','mg','mv','km','km2','cm','bpd','bbl','cu','ca','mday','yr','per', # units
     'one','two','three','four','five','six','seven','eight','nine','ten','de','within','previously','across','top','may','mainly','thus','highly','due','including','along','since','many','various','however','could', # misc 1
     'end','less','able','according','include','included','around','last','first','major','set','average','total','new','based','different','main','associated','related','regarding','approximately','others', # misc 2
-    'likely','later','would','together','even', # misc 3
-    'study','studies','research','paper','suggests','suggest','indicate','indicates','show','shows','results','present','presents','considering','proposed','discussed','licensee','authors','aims',]) # research jargon
-# false positives: Cu, Ca
+    'likely','later','would','together','even','part','using','mostly','several','values', # misc 3
+    'study','studies','studied','research','paper','suggests','suggest','indicate','indicates','show','shows','result','results','present','presents','presented','considering','proposed','discussed','licensee','authors','aims', # research jargon 1
+    'analysis','obtained','estimated','observed','data','model','sources','revealed','found','problem','used', # research jargon 2
+    #'os','nature','algorithm' # TODO: double-check
+])
+# false positives: Cu, Ca,
 
 # w2v:
 # 42123456 (8,5)
@@ -136,7 +139,7 @@ def dict_from_pretrained_model(path_to_embedding_file, relevant_words):
     print(f"{len(misses)} misses while converting")
     return embeddings_index
 
-class FullModel:
+class FooClass:
     pass
 exp_numbers = re.compile("[^A-Za-z]\d+\.\d+|[^A-Za-z]\d+\,\d+|[^A-Za-z]\d+")
 exp_non_alpha = re.compile("[^A-Za-zÀàÁáÂâÃãÉéÊêÍíÓóÔôÕõÚúÇç02-9 \_–+]+")
@@ -186,14 +189,12 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
 def get_representatives (data, labels, centroids, n_clusters, n_representatives=3, reverse=False) -> dict:
     cluster_representatives = {}
     if not CENTROID_CANDIDATE_SELECTION:
-        print("HERE\n\n")
         centroids_ = get_centroids_by_cluster (data, labels, n_clusters)
     else:
         centroids_ = centroids
     
     # get squashed centroids and, for each sample, calculate distance to squashed_centroid
     squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
-    print(squashed_centroids)
     all_distances = np.zeros((data.shape[0], n_clusters))
     for i, r in enumerate(data):
         all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
@@ -216,25 +217,33 @@ def calculate_occurrence (word, original_data, indices):
             count += 1
     return count
 
-def cluster_summary (data, original_data, vec, model, logger=None):
+def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=30, n_frequent=50, logger=None):
     print_or_log = logger.info if logger else print
-    cluster_assoc = model.cluster_assoc
-    assoc_shape = cluster_assoc.shape
-    k,l = assoc_shape
+    has_cocluster_info = hasattr(model, "cluster_assoc")
     row_centroids, col_centroids = model.centroids
+    row_labels_, column_labels_ = model.row_labels_, model.column_labels_
+    m, k = row_centroids.shape
+    n, l = col_centroids.shape
 
-    # get relevant coclusters
-    relevant_coclusters = []
-    for i in range(assoc_shape[0]):
-        for j in range(assoc_shape[1]):
-            if cluster_assoc[i,j]:
-                relevant_coclusters.append((i,j))
+    if has_cocluster_info:
+        cluster_assoc = model.cluster_assoc
+        assoc_shape = cluster_assoc.shape
+    else:
+        print_or_log("No cocluster info.")
+
+    if has_cocluster_info:
+        # get relevant coclusters
+        relevant_coclusters = []
+        for i in range(assoc_shape[0]):
+            for j in range(assoc_shape[1]):
+                if cluster_assoc[i,j]:
+                    relevant_coclusters.append((i,j))
     
     # get representatives
-    row_cluster_representatives = get_representatives(data, model.row_labels_, row_centroids, 
-        assoc_shape[0], n_representatives=5)
-    col_cluster_representatives = get_representatives(data.T, model.column_labels_, col_centroids, 
-        assoc_shape[1], n_representatives=30)
+    row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, 
+        k, n_representatives=n_doc_reps)
+    col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, 
+        l, n_representatives=n_word_reps)
 
     # documents
     print_or_log("DOCUMENTS:\n")
@@ -245,8 +254,8 @@ def cluster_summary (data, original_data, vec, model, logger=None):
             print_or_log(original_data[rep][:200])
         print_or_log("--------------------------------------------------------\n")
 
-    # words
     if isinstance(vec, TfidfVectorizer):
+        # word analysis
         print_or_log("WORDS:\n")
         idx_to_word = vec.get_feature_names()
         for i, c in sorted(col_cluster_representatives.items()):
@@ -257,42 +266,44 @@ def cluster_summary (data, original_data, vec, model, logger=None):
             print_or_log(*to_print, sep=", ")
             print_or_log("--------------------------------------------------------\n")
         
-        print("COCLUSTERS:")
-        N = 50
-        # TODO: do top 10% / 20% / 25% instead?
-        print(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
-        row_reps_topN = get_representatives(data, model.row_labels_, row_centroids, 
-            assoc_shape[0], n_representatives=N)
-        row_reps_bottomN = get_representatives(data, model.row_labels_, row_centroids, 
-            assoc_shape[0], n_representatives=N, reverse=True)
-        
-        # for each cocluster
-        for dc, wc in relevant_coclusters:
-            print("cocluster:", (dc, wc),"\n")
-            to_print = []
-            reps = col_cluster_representatives[wc] # get the representatives for the word cluster
+        if has_cocluster_info:
+            # cocluster analysis
+            print("COCLUSTERS:")
+            N = n_frequent
+            # TODO: do top 10% / 20% / 25% instead?
+            print(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
+            row_reps_topN = get_representatives(data, row_labels_, row_centroids, 
+                k, n_representatives=N)
+            row_reps_bottomN = get_representatives(data, row_labels_, row_centroids, 
+                k, n_representatives=N, reverse=True)
             
-            # for each word, calculate its occurrence in each document cluster
-            for w in reps:
-                if dc not in row_reps_topN:
-                    print(f"## @#@ #@ {dc} not in row_reps!!!\n")
-                    continue
-                else:
-                    # occurrence for the dc in the cocluster
-                    word = idx_to_word[w]
-                    oc_top = calculate_occurrence(word, original_data, row_reps_topN[dc])
-                    oc_bottom = calculate_occurrence(word, original_data, row_reps_bottomN[dc])
-                    
-                    # occurrence for other dcs
-                    oc_others = []
-                    for r_idx in sorted(row_reps_topN.keys()):
-                        if r_idx == dc:
-                            continue
-                        oc_other = calculate_occurrence(word, original_data, row_reps_topN[r_idx])
-                        oc_others.append((r_idx, oc_other))
-                    oc_other_str = "".join([f"({r_idx}:{oc_other*100/N:.0f}%)" for r_idx,oc_other in oc_others])
-                    to_print.append(f"{word}(T:{oc_top*100/N:.0f}%)(B:{oc_bottom*100/N:.0f}%) {oc_other_str}")
-            print(", ".join(to_print), end="\n--------------------------------------------------------\n\n")
+            # for each cocluster
+            for dc, wc in relevant_coclusters:
+                print("cocluster:", (dc, wc),"\n")
+                to_print = []
+                reps = col_cluster_representatives[wc] # get the representatives for the word cluster
+                
+                # for each word, calculate its occurrence in each document cluster
+                for w in reps:
+                    if dc not in row_reps_topN:
+                        print(f"## @#@ #@ {dc} not in row_reps!!!\n")
+                        continue
+                    else:
+                        # occurrence for the dc in the cocluster
+                        word = idx_to_word[w]
+                        oc_top = calculate_occurrence(word, original_data, row_reps_topN[dc])
+                        oc_bottom = calculate_occurrence(word, original_data, row_reps_bottomN[dc])
+                        
+                        # occurrence for other dcs
+                        oc_others = []
+                        for r_idx in sorted(row_reps_topN.keys()):
+                            if r_idx == dc:
+                                continue
+                            oc_other = calculate_occurrence(word, original_data, row_reps_topN[r_idx])
+                            oc_others.append((r_idx, oc_other))
+                        oc_other_str = "".join([f"({r_idx}:{oc_other*100/N:.0f}%)" for r_idx,oc_other in oc_others])
+                        to_print.append(f"{word}(T:{oc_top*100/N:.0f}%)(B:{oc_bottom*100/N:.0f}%) {oc_other_str}")
+                print(", ".join(to_print), end="\n--------------------------------------------------------\n\n")
 
 def do_vectorization (new_abstracts, vectorization_type, **kwargs):
     if vectorization_type == 'tfidf':
@@ -318,7 +329,7 @@ def do_vectorization (new_abstracts, vectorization_type, **kwargs):
                 full_model.save(embedding_dump_name)
             elif vectorization_type == 'pretrained':
                 vec.fit(new_abstracts)
-                full_model = FullModel() # lambdas cannot be pickled apparently
+                full_model = FooClass() # lambdas cannot be pickled apparently
                 full_model.isPreTrained = True
                 full_model.vocabulary = set(vec.vocabulary_.keys())
                 full_model.word_to_vec_dict = dict_from_pretrained_model(path_to_embedding_file="pre-trained/cc.en.300.vec", relevant_words=full_model.vocabulary)
@@ -356,6 +367,8 @@ def do_vectorization (new_abstracts, vectorization_type, **kwargs):
 def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None, iter_max=2000):
     RNG = np.random.default_rng(RNG_SEED)
+    # TODO: add vec to model as attribute for cleaner code
+
     if logger:
         logger.info(f"shape: {data.shape}")
     else:
@@ -480,18 +493,28 @@ def load_new_new_abstracts (path, n_abstracts, old_abstracts):
     return Preprocessor().transform(new_new_not_repeat) # preprocess and eliminate duplicates
 
 def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=None, verbose=False):
+    # TODO: clean up classification
     print_or_log = logger.info if logger else print
-    row_centroids = model.centroids[0]
+    row_centroids, col_centroids = model.centroids
     m, k = row_centroids.shape
+    n, l = col_centroids.shape
+
+    # vectorize abstracts
     Z = vec.transform(extra_abstracts).toarray()
     n, _ = Z.shape
-    print_or_log(f"Z: {Z.shape} centroids: {row_centroids.shape}")
+    print_or_log(f"Z: {Z.shape} r_centroids: {row_centroids.shape} c_centroids: {col_centroids.shape}")
 
-    Z_row_extra_a = Z.reshape(*Z.shape, 1) # add extra dim for clusters
-    Z_row_extra = Z_row_extra_a.repeat(k, axis=2)
+    # classify rows
+    Z_row_extra = Z.reshape(*Z.shape, 1).repeat(k, axis=2) # add extra dim for clusters
     c_row_extra = row_centroids.T.reshape(k, m, 1).repeat(n, axis=2).T # add extra dim for number of samples
     row_distances = norm(Z_row_extra-c_row_extra, axis=1)
     row_classification = np.argmin(row_distances, axis=1)
+
+    # classify columns
+    Z_col_extra = Z.T.reshape(*Z.T.shape, 1).repeat(l, axis=2) # add extra dim for clusters
+    c_col_extra = col_centroids.T.reshape(l, n, 1).repeat(m, axis=2).T # add extra dim for number of samples
+    col_distances = norm(Z_col_extra-c_col_extra, axis=1)
+    col_classification = np.argmin(col_distances, axis=1)
 
     # command-line results
     if verbose:
@@ -500,15 +523,14 @@ def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=
         for i,row in enumerate(extra_abstracts):
             to_print.append(f"[{row_classification[i]}]: {row[:200]}\n\n")
         print_or_log("".join(to_print))
-    return (Z, row_classification)
+    return (Z, row_classification, col_classification)
 
-def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, RNG=None):
+def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centroids, RNG=None):
     RNG = RNG or np.default_rng()
     # calculate reduced centroids
     row_centroids = model.centroids[0]
     print(f"@ Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
     _, _, ax = centroid_scatter_plot(Z, row_centroids, new_abs_classification, title="New samples and Row centroids", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
-    new_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
     new_points = normalize(new_centroids.T, axis=1)
     reduced_new_points = model.row_pca.transform(new_points)
 
@@ -520,9 +542,14 @@ def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, RNG=None):
                 mlines.Line2D([], [], color='black', marker='*', linestyle='None', markersize=20)]
     labels = ['Original\ncentroids', 'New data\ncentroids']
     ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
-    
     plt.show()
-    return new_centroids
+
+def new_abs_cluster_summary (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vec, logger=None):
+    model = FooClass()
+    model.row_labels_, model.column_labels_ = row_col_labels
+    model.centroids = row_col_centroids
+    model.cluster_assoc = cluster_assoc
+    cluster_summary(data, original_data, vec, model, n_word_reps=60, logger=logger)
 
 def main():
     global RNG_SEED
@@ -555,9 +582,25 @@ def main():
         
         # analyze new abstracts
         new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 532+13, abstracts)
-        Z, new_abs_classification = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
+        Z, new_abs_classification, new_word_classification = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
+        new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+        new_col_centroids = get_centroids_by_cluster(Z.T, new_word_classification, model.n_col_clusters)
+        new_abs_cluster_summary(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 
+            (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, logger=None)
+        row_dist = norm(model.centroids[0] - new_row_centroids) # frobenius norm
+        col_dist = norm(model.centroids[1] - new_col_centroids) # frobenius norm
+        print(f"Centroid difference for original and new abstracts:\n({row_dist}, {col_dist})")
+        orig_r_clust_avg = get_centroids_by_cluster(model.data, model.row_labels_, model.n_row_clusters)
+        orig_c_clust_avg = get_centroids_by_cluster(model.data.T, model.column_labels_, model.n_col_clusters)
+        row_dist = norm(orig_r_clust_avg - new_row_centroids) # frobenius norm
+        col_dist = norm(orig_c_clust_avg - new_col_centroids) # frobenius norm
+        print(f"Centroid difference for original and new abstracts (2nd way):\n({row_dist}, {col_dist})")
+        print(f"norm for original centroids: {norm(model.centroids[0])}, {norm(model.centroids[1])}")
+        print(f"mean for original centroids: {np.mean(model.centroids[0])}, {np.mean(model.centroids[1])}")
+
+
         if SHOW_IMAGES:
-            new_abs_reduced_centroids_plot(model, Z, new_abs_classification, RNG=RNG)
+            new_abs_reduced_centroids_plot(model, Z, new_abs_classification, new_row_centroids, RNG=RNG)
 
         
 
