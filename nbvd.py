@@ -228,6 +228,7 @@ class NBVD_coclustering:
             row = np.argmax(U, axis=1) # NOTE: U is associated with rows; V is associated with columns
             col = np.argmax(V, axis=1)
         elif method == "centroids":
+            # TODO: clean up
             row_centroids, col_centroids = centroids
             m, k = row_centroids.shape
             n, l = col_centroids.shape

@@ -35,14 +35,15 @@ import sklearn
 np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
 stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre','post', # preffixes
-    'ltd','sa','SA','copyright','eg','etc','elsevier','springer','springer_verlag','inc','publishing', # copyright
-    'g','kg','mg','mv','km','km2','cm','bpd','bbl','cu','ca','mday','yr','per', # units
-    'one','two','three','four','five','six','seven','eight','nine','ten','de','within','previously','across','top','may','mainly','thus','highly','due','including','along','since','many','various','however','could', # misc 1
+    'ltd','sa','SA','copyright','eg','etc','elsevier','springer','springer_verlag','inc','publishing','reserved', # copyright
+    'g','m','kg','mg','mv','km','km2','cm','bpd','bbl','cu','ca','mday','yr','per', # units
+    'th','one','two','three','four','five','six','seven','eight','nine','ten','de','within','previously','across','top','may','mainly','thus','highly','due','including','along','since','many','various','however','could', # misc 1
     'end','less','able','according','include','included','around','last','first','major','set','average','total','new','based','different','main','associated','related','regarding','approximately','others', # misc 2
-    'likely','later','would','together','even','part','using','mostly','several','values', # misc 3
-    'study','studies','studied','research','paper','suggests','suggest','indicate','indicates','show','shows','result','results','present','presents','presented','considering','proposed','discussed','licensee','authors','aims', # research jargon 1
-    'analysis','obtained','estimated','observed','data','model','sources','revealed','found','problem','used', # research jargon 2
-    #'os','nature','algorithm' # TODO: double-check
+    'likely','later','would','together','even','part','using','mostly','several','values','important','although', # misc 3
+    'study','studies','studied','research','paper','suggests','suggest','indicate','indicates','show','shows','result','results','present','presents','presented','consider','considered','considering','proposed','discussed','licensee','authors','aims', # research jargon 1
+    'analysis','obtained','estimated','observed','data','model','sources','revealed','found','problem','used','article', # research jargon 2
+    #'os','nature','algorithm','poorly','strongly','rights', # TODO: double-check
+    # TODO: regex for copyright
 ])
 # false positives: Cu, Ca,
 
@@ -71,7 +72,7 @@ CENTROID_CANDIDATE_SELECTION=False
 rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=False
+SHOW_IMAGES=True
 
 
 ############################################################################## 
@@ -194,10 +195,23 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
         centroids_ = centroids
     
     # get squashed centroids and, for each sample, calculate distance to squashed_centroid
+    # NOTE: sum of flattened Z (for each label) might be better? idk
     squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
+    
+    #squashed_centroids = centroids_.T # BAD
+
+    #print("zeros", np.sum((centroids_.T == 0), axis=1))
+    #print("sqshd", squashed_centroids)
     all_distances = np.zeros((data.shape[0], n_clusters))
     for i, r in enumerate(data):
         all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
+    
+    """ # BAD
+    c_shape = centroids_.shape
+    data_extra = data.reshape(*data.shape, 1).repeat(c_shape[1], axis=2) # add extra dim for clusters
+    c_extra = centroids_.T.reshape(c_shape[1], c_shape[0], 1).repeat(data.shape[0], axis=2).T # add extra dim for number of samples
+    all_distances = norm(data_extra-c_extra, axis=1)
+    """
 
     # get representatives
     for c in range(n_clusters):
@@ -551,6 +565,26 @@ def new_abs_cluster_summary (data, original_data, row_col_labels, row_col_centro
     model.cluster_assoc = cluster_assoc
     cluster_summary(data, original_data, vec, model, n_word_reps=60, logger=logger)
 
+def misc_statistics (model, new_row_centroids, new_col_centroids, vec, new_new_abstracts):
+    row_dist = norm(model.centroids[0] - new_row_centroids) # frobenius norm
+    col_dist = norm(model.centroids[1] - new_col_centroids) # frobenius norm
+    print(f"Centroid difference for original and new abstracts:\n({row_dist}, {col_dist})")
+    orig_r_clust_avg = get_centroids_by_cluster(model.data, model.row_labels_, model.n_row_clusters)
+    orig_c_clust_avg = get_centroids_by_cluster(model.data.T, model.column_labels_, model.n_col_clusters)
+    row_dist = norm(orig_r_clust_avg - new_row_centroids) # frobenius norm
+    col_dist = norm(orig_c_clust_avg - new_col_centroids) # frobenius norm
+    print(f"Centroid difference for original and new abstracts (2nd way):\n({row_dist}, {col_dist})")
+    print(f"norm for original centroids: {norm(model.centroids[0])}, {norm(model.centroids[1])}")
+    print(f"mean for original centroids: {np.mean(model.centroids[0])}, {np.mean(model.centroids[1])}")
+
+    # DBG
+    s1 = set(vec.vocabulary_.keys())
+    new_vec = TfidfVectorizer(**vec_kwargs)
+    new_vec.fit(new_new_abstracts)
+    s2 = set(new_vec.vocabulary_.keys())
+    print("\n\nvocab1:", len(s1),"vocab2:", len(s2))
+    print("diferenca vocab (2 nao em 1):",len(s2.difference(s1)))
+
 def main():
     global RNG_SEED
     RNG, RNG_SEED = start_default_rng(seed=RNG_SEED)
@@ -587,21 +621,13 @@ def main():
         new_col_centroids = get_centroids_by_cluster(Z.T, new_word_classification, model.n_col_clusters)
         new_abs_cluster_summary(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 
             (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, logger=None)
-        row_dist = norm(model.centroids[0] - new_row_centroids) # frobenius norm
-        col_dist = norm(model.centroids[1] - new_col_centroids) # frobenius norm
-        print(f"Centroid difference for original and new abstracts:\n({row_dist}, {col_dist})")
-        orig_r_clust_avg = get_centroids_by_cluster(model.data, model.row_labels_, model.n_row_clusters)
-        orig_c_clust_avg = get_centroids_by_cluster(model.data.T, model.column_labels_, model.n_col_clusters)
-        row_dist = norm(orig_r_clust_avg - new_row_centroids) # frobenius norm
-        col_dist = norm(orig_c_clust_avg - new_col_centroids) # frobenius norm
-        print(f"Centroid difference for original and new abstracts (2nd way):\n({row_dist}, {col_dist})")
-        print(f"norm for original centroids: {norm(model.centroids[0])}, {norm(model.centroids[1])}")
-        print(f"mean for original centroids: {np.mean(model.centroids[0])}, {np.mean(model.centroids[1])}")
+        
+        # distance metrics and vocabulary sizes
+        misc_statistics(model, new_row_centroids, new_col_centroids, vec, new_new_abstracts)
 
-
+        # reduced-dimension scatter plot for new abstracts
         if SHOW_IMAGES:
             new_abs_reduced_centroids_plot(model, Z, new_abs_classification, new_row_centroids, RNG=RNG)
-
         
 
     """
