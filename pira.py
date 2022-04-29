@@ -3,6 +3,7 @@
 import numpy as np
 from numpy.linalg import inv, norm
 from numpy.random import default_rng
+import math
 from matplotlib import pyplot as plt
 import matplotlib.lines as mlines
 import pandas as pd
@@ -16,7 +17,7 @@ from sklearn.feature_extraction.text import *
 from sklearn.preprocessing import normalize
 import nltk
 
-from collections import Counter
+from collections import Counter, OrderedDict # OrderedDict is redundant as of Python 3.7
 import itertools
 from pprint import pprint
 import sys,os,pickle,re
@@ -42,7 +43,7 @@ stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre'
     'likely','later','would','together','even','part','using','mostly','several','values','important','although', # misc 3
     'study','studies','studied','research','paper','suggests','suggest','indicate','indicates','show','shows','result','results','present','presents','presented','consider','considered','considering','proposed','discussed','licensee','authors','aims', # research jargon 1
     'analysis','obtained','estimated','observed','data','model','sources','revealed','found','problem','used','article', # research jargon 2
-    #'os','nature','algorithm','poorly','strongly','rights', # TODO: double-check
+    #'os','nature','algorithm','poorly','strongly','rights','universidade', # TODO: double-check
     # TODO: regex for copyright
 ])
 # false positives: Cu, Ca,
@@ -231,8 +232,18 @@ def calculate_occurrence (word, original_data, indices):
             count += 1
     return count
 
-def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=30, n_frequent=50, logger=None):
-    print_or_log = logger.info if logger else print
+def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=30, n_frequent=50, verbose=True, logger=None):
+    """Most representative documents/words are chosen based on distance to the (squashed) average of the assigned cluster.
+    w_occurrence_per_d_cluster is a dict with length equal to n_word_reps*n_col_clusters and values corresponding to a dict of Bunch
+    of the form 
+        (occ = (occurence in top documents for d_cluster, occurence in bottom documents for d_cluster),
+        assigned_dc = associated document cluster, 
+        assigned_wc = associated word cluster, .
+    (If d_cluster != cocluster-associated document cluster, no occurrence in bottom documents.)
+    
+    Returns: ((most representative documents, most representative words), word occurrence per document cluster)"""
+
+    print_or_log = logger.info if logger else (print if verbose else lambda s : None)
     has_cocluster_info = hasattr(model, "cluster_assoc")
     row_centroids, col_centroids = model.centroids
     row_labels_, column_labels_ = model.row_labels_, model.column_labels_
@@ -264,7 +275,7 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
     for i, reps in sorted(row_cluster_representatives.items()):
         print_or_log("cluster:", i)
         for rep in reps:
-            print_or_log("rep:", rep)
+            print_or_log(f"rep: {rep}")
             print_or_log(original_data[rep][:200])
         print_or_log("--------------------------------------------------------\n")
 
@@ -277,47 +288,105 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
             to_print = []
             for rep in c:
                 to_print.append(idx_to_word[rep])
-            print_or_log(*to_print, sep=", ")
+            print_or_log(",".join(to_print))
             print_or_log("--------------------------------------------------------\n")
         
         if has_cocluster_info:
             # cocluster analysis
-            print("COCLUSTERS:")
+            print_or_log("COCLUSTERS:")
             N = n_frequent
             # TODO: do top 10% / 20% / 25% instead?
-            print(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
+            # TODO: account for clusters smaller than N; duct tape solution is to reduce N manually
+            print_or_log(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
             row_reps_topN = get_representatives(data, row_labels_, row_centroids, 
                 k, n_representatives=N)
             row_reps_bottomN = get_representatives(data, row_labels_, row_centroids, 
                 k, n_representatives=N, reverse=True)
             
             # for each cocluster
+            w_occurrence_per_d_cluster = OrderedDict() # store occurrence and dc info for each word
             for dc, wc in relevant_coclusters:
-                print("cocluster:", (dc, wc),"\n")
+                print_or_log("cocluster:", (dc, wc),"\n")
                 to_print = []
                 reps = col_cluster_representatives[wc] # get the representatives for the word cluster
                 
+                """ DELETE
+                # create dicts to output later
+                for rclust in sorted(row_reps_topN.keys()):
+                    if rclust == dc:
+                        w_occurrence_per_d_cluster[rclust] = (OrderedDict(), OrderedDict()) # occurrence in top docs, bottom docs
+                    else:
+                        w_occurrence_per_d_cluster[rclust] = (OrderedDict(),)
+                """
+
                 # for each word, calculate its occurrence in each document cluster
                 for w in reps:
                     if dc not in row_reps_topN:
-                        print(f"## @#@ #@ {dc} not in row_reps!!!\n")
+                        print_or_log(f"dbg ## @#@ #@ {dc} not in row_reps!!!\n")
                         continue
                     else:
                         # occurrence for the dc in the cocluster
                         word = idx_to_word[w]
-                        oc_top = calculate_occurrence(word, original_data, row_reps_topN[dc])
-                        oc_bottom = calculate_occurrence(word, original_data, row_reps_bottomN[dc])
+                        oc_top = 100/N * calculate_occurrence(word, original_data, row_reps_topN[dc])
+                        oc_bottom = 100/N * calculate_occurrence(word, original_data, row_reps_bottomN[dc])
                         
+                        w_occurrence_per_d_cluster[word] = OrderedDict()
+                        w_occurrence_per_d_cluster[word][dc] = Bunch(occ=(oc_top, oc_bottom), assigned_dc=dc, assigned_wc=wc)
+                        """
+                        main_dc_top_dict, main_dc_bottom_dict = w_occurrence_per_d_cluster[dc][0], w_occurrence_per_d_cluster[dc][1]
+                        main_dc_top_dict[word], main_dc_bottom_dict[word] = oc_top, oc_bottom
+                        """
                         # occurrence for other dcs
                         oc_others = []
-                        for r_idx in sorted(row_reps_topN.keys()):
-                            if r_idx == dc:
+                        for rclust in sorted(row_reps_topN.keys()):
+                            if rclust == dc:
                                 continue
-                            oc_other = calculate_occurrence(word, original_data, row_reps_topN[r_idx])
-                            oc_others.append((r_idx, oc_other))
-                        oc_other_str = "".join([f"({r_idx}:{oc_other*100/N:.0f}%)" for r_idx,oc_other in oc_others])
-                        to_print.append(f"{word}(T:{oc_top*100/N:.0f}%)(B:{oc_bottom*100/N:.0f}%) {oc_other_str}")
-                print(", ".join(to_print), end="\n--------------------------------------------------------\n\n")
+                            oc_other = 100/N * calculate_occurrence(word, original_data, row_reps_topN[rclust])
+                            oc_others.append((rclust, oc_other))
+                            
+                            w_occurrence_per_d_cluster[word][rclust] = Bunch(occ=(oc_other, ), assigned_dc=dc, assigned_wc=wc)
+                            """
+                            other_dc_dict = w_occurrence_per_d_cluster[rclust][0]
+                            other_dc_dict[word] = oc_other
+                            """
+                        oc_other_str = "".join([f"({rclust}:{oc_other:.0f}%)" for rclust,oc_other in oc_others])
+                        to_print.append(f"{word}(T:{oc_top:.0f}%)(B:{oc_bottom:.0f}%) {oc_other_str}")
+                print_or_log(", ".join(to_print)+"\n--------------------------------------------------------\n")
+    return (row_cluster_representatives, col_cluster_representatives), w_occurrence_per_d_cluster
+
+def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps):
+    n_hplots, n_vplots = math.ceil(math.sqrt(n_word_reps)), round(math.sqrt(n_word_reps)) # more rows than columns
+    # DBG # im pretty sure this is correct for all reasonable numbers
+    if n_hplots * n_vplots < n_word_reps:
+        raise Exception("mistake somewhere")
+    
+    # translate w_occurrence_per_d_cluster into bar plots
+    current_dc, current_ax = None, 1
+    fig = plt.figure(figsize=(2*6.4,2*4.8))
+    fig.set_tight_layout(True)
+    for word, info in w_occurrence_per_d_cluster.items():
+        w_assigned_dc = info[0].assigned_dc # assigned_dc for w, inside info for cluster 0
+        if current_dc is None: 
+            current_dc = w_assigned_dc # for initial item
+            fig.suptitle(f"Word cluster {info[0].assigned_wc} (top {n_word_reps}): occurrence in doc clusters\n")
+
+        # make a new figure for a different cluster
+        if w_assigned_dc != current_dc:
+            current_dc = w_assigned_dc
+            current_ax = 1
+            fig = plt.figure(figsize=(2*6.4,2*4.8))
+            fig.suptitle(f"Word cluster {info[0].assigned_wc} (top {n_word_reps}): occurrence in doc clusters\n")
+            fig.set_tight_layout(True)
+        
+        # bar plot for current word
+        ax = fig.add_subplot(n_hplots, n_vplots, current_ax) # subplot index is 1-based
+        current_ax += 1
+        short_info = sorted([(k, v.occ[0]) for k,v in info.items()]) # value = occurrence in top docs
+        labels, values = zip(*short_info) # split into keys, values
+        color = ["#64001E" if (l != w_assigned_dc) else "#00FA8C" for l in labels]
+        ax.bar(labels, values, color=color)
+        ax.set_title(word)
+    plt.show()
 
 def do_vectorization (new_abstracts, vectorization_type, **kwargs):
     if vectorization_type == 'tfidf':
@@ -426,9 +495,10 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
     # textual analysis
-    cluster_summary (data, original_data, vectorization, model, logger=None)
+    representatives, w_occurrence_per_d_cluster = cluster_summary (data, original_data, vectorization, model, 
+        n_word_reps=20, logger=None)
 
-    ### DBG: testing different methods of labelling
+    ### DBG: testing different methods of labelling and cluster sizes
     if alg == 'nbvd':
         _, row1, col1 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="not fancy")
         #_, row2, col2 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="fancy")
@@ -483,6 +553,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
             to_plot = [data, model.U@model.S@model.V.T, model.S]
             names = ["Original dataset", "Reconstructed matrix USV.T", "Block value matrix S"]
         plot_matrices(to_plot, names, timer = None if only_one else 2*timer, aspect_ratio=ASPECT_RATIO)
+        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=20)
 
     # return general statistics
     if alg == 'nbvd':
@@ -543,7 +614,7 @@ def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centro
     RNG = RNG or np.default_rng()
     # calculate reduced centroids
     row_centroids = model.centroids[0]
-    print(f"@ Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
+    print(f"dbg: Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
     _, _, ax = centroid_scatter_plot(Z, row_centroids, new_abs_classification, title="New samples and Row centroids", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
     new_points = normalize(new_centroids.T, axis=1)
     reduced_new_points = model.row_pca.transform(new_points)
@@ -558,12 +629,14 @@ def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centro
     ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
     plt.show()
 
-def new_abs_cluster_summary (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vec, logger=None):
+def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vec, bar_plot=True, logger=None):
     model = FooClass()
     model.row_labels_, model.column_labels_ = row_col_labels
     model.centroids = row_col_centroids
     model.cluster_assoc = cluster_assoc
-    cluster_summary(data, original_data, vec, model, n_word_reps=60, logger=logger)
+    _, w_occurrence_per_d_cluster = cluster_summary(data, original_data, vec, model, n_word_reps=20, logger=logger)
+    cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=20)
+
 
 def misc_statistics (model, new_row_centroids, new_col_centroids, vec, new_new_abstracts):
     row_dist = norm(model.centroids[0] - new_row_centroids) # frobenius norm
@@ -619,8 +692,8 @@ def main():
         Z, new_abs_classification, new_word_classification = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
         new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
         new_col_centroids = get_centroids_by_cluster(Z.T, new_word_classification, model.n_col_clusters)
-        new_abs_cluster_summary(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 
-            (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, logger=None)
+        new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 
+            (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, bar_plot=SHOW_IMAGES, logger=None)
         
         # distance metrics and vocabulary sizes
         misc_statistics(model, new_row_centroids, new_col_centroids, vec, new_new_abstracts)
