@@ -10,7 +10,7 @@ import pandas as pd
 from gensim.models import Word2Vec, KeyedVectors, Doc2Vec
 from gensim.models.doc2vec import TaggedDocument
 from sklearn.datasets import make_biclusters
-from sklearn.cluster import SpectralCoclustering, KMeans
+from sklearn.cluster import KMeans, SpectralClustering
 from sklearn.metrics import silhouette_score, consensus_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
 from sklearn.datasets import make_blobs
 from sklearn.feature_extraction.text import *
@@ -60,7 +60,7 @@ VECTORIZATION='tfidf'
 vec_kwargs = Bunch(min_df=4, stop_words=stop_words_nltk, lowercase=False)
 
 W2V_DIM=100
-ALG='nbvd'
+ALG='kmeans'
 ATTEMPTS_MAX=1
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 WAIT_TIME = 4 # wait time between tasks
@@ -73,7 +73,7 @@ CENTROID_CANDIDATE_SELECTION=False
 rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=True
+SHOW_IMAGES=False
 
 
 ############################################################################## 
@@ -384,7 +384,7 @@ def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps):
         short_info = sorted([(k, v.occ[0]) for k,v in info.items()]) # value = occurrence in top docs
         labels, values = zip(*short_info) # split into keys, values
         color = ["#64001E" if (l != w_assigned_dc) else "#00FA8C" for l in labels]
-        ax.bar(labels, values, color=color)
+        ax.bar(labels, values, color=color) # categorical plot
         ax.set_title(word)
     plt.show()
 
@@ -447,6 +447,56 @@ def do_vectorization (new_abstracts, vectorization_type, **kwargs):
 
     return (data, vec)
 
+def kmeans_cluster_assoc (model, original_data, vec, vec_kwargs, row_labels, col_labels, DBG=False):
+    print_or_nothing = print if DBG else lambda *args : None
+    docs = np.array(original_data)
+    print_or_nothing("km", docs.shape)
+    words = np.array(vec.get_feature_names())
+    k, l = model.n_row_clusters, model.n_col_clusters
+    cluster_assoc = np.zeros((k,l))
+
+    # select clusters and associate
+    for dc in range(k):
+        selected_docs_idx = (row_labels == dc)
+        selected_docs = docs[selected_docs_idx]
+
+        for wc in range(l):
+            print_or_nothing(dc,wc,":")
+            cv = CountVectorizer(vocabulary=vec.vocabulary_, **vec_kwargs)
+            counts = np.mean(cv.fit_transform(selected_docs).toarray(),axis=0) # sum?
+            print_or_nothing("counts",counts.shape)
+            in_cluster_word_counts = counts[(col_labels == wc)]
+            print_or_nothing("in cl", in_cluster_word_counts.shape)
+            cluster_assoc[dc, wc] = np.sum(in_cluster_word_counts)
+        print_or_nothing("row:", cluster_assoc[dc,:])
+        cluster_assoc_row = cluster_assoc[dc,:]
+        max_mask = (np.arange(l) == np.argmax(cluster_assoc_row))
+        cluster_assoc_row[~max_mask] = 0
+        print_or_nothing("row:", cluster_assoc[dc,:])
+    cluster_assoc = np.array(cluster_assoc, dtype=bool)
+    print_or_nothing(cluster_assoc)
+    #sys.exit(0)
+    return cluster_assoc
+
+def kmeans_fix_labels (labels, RNG, probability=0.5):
+    print("before:",np.bincount(labels))
+    i_problem = np.argmax(np.bincount(labels))
+    RNG = RNG or np.random.default_rng()
+    selected_labels = labels[labels == i_problem]
+    flat_length = selected_labels.shape[0]
+    n_labels = 1+np.amax(labels)
+    new_labels = labels.copy()
+
+    # replace random i_problem labels with other labels
+    np.place(new_labels, 
+        new_labels == i_problem, 
+        np.mod(selected_labels + (RNG.random(size=(flat_length,)) < probability) * RNG.integers(1, n_labels, size=(flat_length,), dtype=np.int32),
+            n_labels, dtype=np.int32)
+    )
+    
+    print("after:",np.bincount(new_labels))
+    return new_labels
+
 def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None, iter_max=2000):
     RNG = np.random.default_rng(RNG_SEED)
@@ -472,16 +522,46 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     elif alg == 'wbkm':
         model = wbkm.WBKM_coclustering(data, n_clusters=N_ROW_CLUSTERS, n_attempts=1,
             random_state=RNG_SEED, verbose=True, logger=logger)
-    elif alg == 'spectral':
+    elif alg == 'spectralco':
         model = SpectralCoclustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
         model.fit(data)
-    elif ALG == 'nbvd_waldyr':
+    elif alg == 'nbvd_waldyr':
         U, S, V, resNEW, itr = algorithms.NBVD(data, N_ROW_CLUSTERS, N_COL_CLUSTERS, itrMAX=2000)
-        model = lambda: None
+        model = FooClass()
         model.U, model.S, model.V = U, S, V
         model.biclusters_, model.row_labels_, model.column_labels_ = NBVD_coclustering.get_stuff(U, V.T)
         print("resNEW, itr:", resNEW, itr) # resNEW is norm squared; itr is iteration_no
-    
+    elif alg == 'kmeans':
+        model = FooClass()
+        model.data, model.n_row_clusters, model.n_col_clusters = data, N_ROW_CLUSTERS, N_COL_CLUSTERS
+        
+        model.kmeansR = KMeans(n_clusters=N_ROW_CLUSTERS, init='k-means++', random_state=RNG_SEED, n_init=10, tol=1e-6)
+        model.kmeansR.fit(data)
+        model.row_labels_ = np.array(model.kmeansR.labels_)
+        model.kmeansC = KMeans(n_clusters=N_COL_CLUSTERS, init='k-means++', random_state=RNG_SEED, n_init=10, tol=1e-6)
+        model.kmeansC.fit(data.T)
+        print("r_iter, c_iter:", model.kmeansR.n_iter_, model.kmeansC.n_iter_)
+        print("row labels", np.bincount(model.row_labels_), "\n")
+        model.column_labels_ = kmeans_fix_labels(np.array(model.kmeansC.labels_), RNG=RNG)
+        print("col labels", np.bincount(model.column_labels_))
+        model.centroids = (model.kmeansR.cluster_centers_.T, model.kmeansC.cluster_centers_.T)
+        model.cluster_assoc = kmeans_cluster_assoc(model, original_data, vectorization, vec_kwargs, model.row_labels_, model.column_labels_)
+    """
+    elif alg == 'spectral':
+        model = FooClass()
+        model.data, model.n_row_clusters, model.n_col_clusters = data, N_ROW_CLUSTERS, N_COL_CLUSTERS
+        
+        model.kmeansR = SpectralClustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
+        model.kmeansR.fit(data)
+        model.row_labels_ = np.array(model.kmeansR.labels_)
+        model.kmeansC = SpectralClustering(n_clusters=N_COL_CLUSTERS, random_state=RNG_SEED)
+        model.kmeansC.fit(data.T)
+        print("row labels", np.bincount(model.row_labels_))
+        model.column_labels_ = np.array(model.kmeansC.labels_)
+        print("col labels", np.bincount(model.column_labels_))
+        #model.centroids = (model.kmeansR.cluster_centers_.T, model.kmeansC.cluster_centers_.T)
+        model.cluster_assoc = kmeans_cluster_assoc(model, original_data, vectorization, vec_kwargs, model.row_labels_, model.column_labels_)
+    """
     # show animation of clustering process
     if MOVIE and alg == 'nbvd':
         pyqtgraph_thing(data, model, 25)
@@ -510,7 +590,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         #silhouette2 = print_silhouette_score(data, row2, col2, logger=logger)
         print("centroids")
         silhouette3 = print_silhouette_score(data, row3, col3, logger=logger)
-        print("rows:")
+        """print("rows:")
+        
         thing = lambda arr : sorted(Counter(arr).items())
         print(thing(row1), 
             #thing(row2),
@@ -522,7 +603,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         print(thing(col1), 
             #thing(col2), 
             thing(col3), sep="\n")
-
+        """
     if show_images:
         # shade lines/columns of original dataset
         if LABEL_CHECK:
@@ -563,9 +644,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
             max_iter_reached=model.best_max_iter_reached, best_norm=model.best_norm,
             no_zero_cols=model.best_no_zero_cols, n_attempts=1)
-    elif alg == 'spectral':
-        bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
-    elif alg == 'kmeans':
+    else:
         bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
     return (model, bunch)
 
@@ -635,7 +714,8 @@ def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_c
     model.centroids = row_col_centroids
     model.cluster_assoc = cluster_assoc
     _, w_occurrence_per_d_cluster = cluster_summary(data, original_data, vec, model, n_word_reps=20, logger=logger)
-    cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=20)
+    if bar_plot:
+        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=20)
 
 
 def misc_statistics (model, new_row_centroids, new_col_centroids, vec, new_new_abstracts):
@@ -688,8 +768,10 @@ def main():
         model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
         
         # analyze new abstracts
+        print("@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#","\t\tNEW ABSTRACTS\t\t","@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#", sep="\n")
         new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 532+13, abstracts)
         Z, new_abs_classification, new_word_classification = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
+        print_silhouette_score(Z, new_abs_classification, new_word_classification)
         new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
         new_col_centroids = get_centroids_by_cluster(Z.T, new_word_classification, model.n_col_clusters)
         new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 

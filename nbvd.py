@@ -59,13 +59,12 @@ class NBVD_coclustering:
     row_labels_: np.ndarray = field(init=False)
     column_labels_: np.ndarray = field(init=False)
     cluster_assoc: np.ndarray = field(init=False)
+    centroids: Tuple[np.ndarray] = field(init=False)
     R: np.ndarray = field(init=False)
     B: np.ndarray = field(init=False)
     C: np.ndarray = field(init=False)
     S: np.ndarray = field(init=False)
     best_norm: int = field(init=False)
-    best_norm: int = field(init=False)
-    centroids: Tuple[np.ndarray] = field(init=False)
 
     def print_or_log(self, s):
         # NOTE: logging might break if there's an exception while logging

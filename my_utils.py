@@ -10,6 +10,7 @@ from sklearn.datasets import make_biclusters, make_blobs
 from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.decomposition import *
 from sklearn.preprocessing import *
+from sklearn.feature_extraction.text import *
 from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
 from sklearn.utils import Bunch
 from dataclasses import dataclass, field
@@ -204,7 +205,8 @@ def count_zero_columns (M : np.ndarray):
 def print_silhouette_score (data, row_labels, column_labels, logger=None):
     sil_score_row = silhouette_score(data, row_labels)
     sil_score_col = silhouette_score(data.T, column_labels)
-    results_message = f"\nsilhouette score:\n\trows: {sil_score_row:.3f}\n\tcols: {sil_score_col:.3f}\n"
+    row_labels_bin, col_labels_bin = np.bincount(row_labels), np.bincount(column_labels)
+    results_message = f"\nrow label count: {row_labels_bin}\ncol label count: {col_labels_bin}\nsilhouette score:\n\trows: {sil_score_row:.3f}\n\tcols: {sil_score_col:.3f}\n"
     if logger:
         logger.info(results_message)
     else:
