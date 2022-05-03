@@ -60,7 +60,7 @@ VECTORIZATION='tfidf'
 vec_kwargs = Bunch(min_df=4, stop_words=stop_words_nltk, lowercase=False)
 
 W2V_DIM=100
-ALG='kmeans'
+ALG='nbvd'
 ATTEMPTS_MAX=1
 SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 WAIT_TIME = 4 # wait time between tasks
@@ -74,7 +74,7 @@ rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 SHOW_IMAGES=False
-
+NEW_ABS=True
 
 ############################################################################## 
 # to use a set number of cpus: 
@@ -188,41 +188,69 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
         if count >= n_representatives:
             return # stop yielding
 
-def get_representatives (data, labels, centroids, n_clusters, n_representatives=3, reverse=False) -> dict:
+def get_representatives (data, labels, centroids, n_clusters, n_representatives=5, reverse=False, method='naive1', original_data=None, vec=None, kind=None) -> dict:
     cluster_representatives = {}
-    if not CENTROID_CANDIDATE_SELECTION:
-        centroids_ = get_centroids_by_cluster (data, labels, n_clusters)
-    else:
-        centroids_ = centroids
-    
-    # get squashed centroids and, for each sample, calculate distance to squashed_centroid
-    # NOTE: sum of flattened Z (for each label) might be better? idk
-    squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
-    
-    #squashed_centroids = centroids_.T # BAD
 
-    #print("zeros", np.sum((centroids_.T == 0), axis=1))
-    #print("sqshd", squashed_centroids)
-    all_distances = np.zeros((data.shape[0], n_clusters))
-    for i, r in enumerate(data):
-        all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
-    
-    """ # BAD
-    c_shape = centroids_.shape
-    data_extra = data.reshape(*data.shape, 1).repeat(c_shape[1], axis=2) # add extra dim for clusters
-    c_extra = centroids_.T.reshape(c_shape[1], c_shape[0], 1).repeat(data.shape[0], axis=2).T # add extra dim for number of samples
-    all_distances = norm(data_extra-c_extra, axis=1)
-    """
+    if method == 'naive1':
+        if not CENTROID_CANDIDATE_SELECTION:
+            centroids_ = get_centroids_by_cluster (data, labels, n_clusters)
+        else:
+            centroids_ = centroids
+        
+        # get squashed centroids and, for each sample, calculate distance to squashed_centroid
+        # NOTE: sum of flattened Z (for each label) might be better? idk
+        squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
+        #squashed_centroids = centroids_.T # BAD
+        
+        big = max(1000, np.sum(np.abs(data)))
+        squashed_centroids[:] = big
+
+        #print("sqshd", squashed_centroids)
+        all_distances = np.zeros((data.shape[0], n_clusters))
+        for i, r in enumerate(data):
+            all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
+
+        """ # BAD
+        c_shape = centroids_.shape
+        data_extra = data.reshape(*data.shape, 1).repeat(c_shape[1], axis=2) # add extra dim for clusters
+        c_extra = centroids_.T.reshape(c_shape[1], c_shape[0], 1).repeat(data.shape[0], axis=2).T # add extra dim for number of samples
+        all_distances = norm(data_extra-c_extra, axis=1)
+        """
+    elif method == 'naive2':
+        cv = CountVectorizer(vocabulary=vec.vocabulary_, **vec_kwargs)
+        doc_w_counts = cv.fit_transform(original_data).toarray()
+        if kind == 'docs':
+            total_words_per_doc = np.sum(doc_w_counts, axis=1)
+            dists = total_words_per_doc
+        elif kind == 'words':
+            total_docs_per_word = np.sum(doc_w_counts, axis=0)
+            dists = total_docs_per_word
+        reverse = not reverse
+        
+        all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
 
     # get representatives
     for c in range(n_clusters):
         dists_to_centroid = sorted(zip(list(range(data.shape[0])), list(all_distances[:,c])), 
             key = lambda t : t[1], reverse=reverse)
-
         # select top n; eliminate candidates that arent from the relevant cluster
         rep_candidates = list(__candidate_selection(dists_to_centroid, labels, c, n_representatives))
         if rep_candidates: # if anyones left
             cluster_representatives[c] = rep_candidates   
+    
+    """ #DBG
+    print("\ndata min max", np.amin(data[data!=0]) , np.amax(data))
+    dataz = np.sum(data == 0,axis=1)
+    print("dataz min max", np.amin(dataz), np.amax(dataz))
+    selected_things = [(c,data[reps]) for c,reps in sorted(cluster_representatives.items())]
+    for t in selected_things:
+        print("\ncluster", t[0])
+        #print("norms:", norm(t[1], axis=1))
+        print("zer:", np.sum(t[1] == 0, axis=1))
+        rep_idx = cluster_representatives[t[0]]
+        ddd = data[rep_idx]
+        print("sum:",np.sum(ddd, axis=1))
+        #print("idx:",rep_idx)"""
     return cluster_representatives
 
 def calculate_occurrence (word, original_data, indices):
@@ -232,7 +260,7 @@ def calculate_occurrence (word, original_data, indices):
             count += 1
     return count
 
-def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=30, n_frequent=50, verbose=True, logger=None):
+def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, verbose=True, logger=None):
     """Most representative documents/words are chosen based on distance to the (squashed) average of the assigned cluster.
     w_occurrence_per_d_cluster is a dict with length equal to n_word_reps*n_col_clusters and values corresponding to a dict of Bunch
     of the form 
@@ -269,6 +297,18 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
         k, n_representatives=n_doc_reps)
     col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, 
         l, n_representatives=n_word_reps)
+    """# DBG
+    row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10)
+    col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10)
+    row_cluster_representatives2 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='naive2', original_data=original_data, vec=vec, kind='docs')
+    col_cluster_representatives2 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='naive2', original_data=original_data, vec=vec, kind='words')
+    print("docs:")
+    print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
+    print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives.values(), row_cluster_representatives2.values())], sep="\n")
+    print("\nwords:")
+    print(*[f"{t[0]}\n{t[1]}" for t in zip(col_cluster_representatives.items(), col_cluster_representatives2.items())], sep="\n")
+    print("comum:", *[set(c1).intersection(set(c2)) for c1,c2 in zip(col_cluster_representatives.values(), col_cluster_representatives2.values())], sep="\n")
+    """
 
     # documents
     print_or_log("DOCUMENTS:\n")
@@ -531,6 +571,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         model.U, model.S, model.V = U, S, V
         model.biclusters_, model.row_labels_, model.column_labels_ = NBVD_coclustering.get_stuff(U, V.T)
         print("resNEW, itr:", resNEW, itr) # resNEW is norm squared; itr is iteration_no
+    
+    """ # clumps most docs into 1 cluster
     elif alg == 'kmeans':
         model = FooClass()
         model.data, model.n_row_clusters, model.n_col_clusters = data, N_ROW_CLUSTERS, N_COL_CLUSTERS
@@ -546,7 +588,6 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         print("col labels", np.bincount(model.column_labels_))
         model.centroids = (model.kmeansR.cluster_centers_.T, model.kmeansC.cluster_centers_.T)
         model.cluster_assoc = kmeans_cluster_assoc(model, original_data, vectorization, vec_kwargs, model.row_labels_, model.column_labels_)
-    """
     elif alg == 'spectral':
         model = FooClass()
         model.data, model.n_row_clusters, model.n_col_clusters = data, N_ROW_CLUSTERS, N_COL_CLUSTERS
@@ -562,6 +603,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         #model.centroids = (model.kmeansR.cluster_centers_.T, model.kmeansC.cluster_centers_.T)
         model.cluster_assoc = kmeans_cluster_assoc(model, original_data, vectorization, vec_kwargs, model.row_labels_, model.column_labels_)
     """
+
     # show animation of clustering process
     if MOVIE and alg == 'nbvd':
         pyqtgraph_thing(data, model, 25)
@@ -576,7 +618,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
 
     # textual analysis
     representatives, w_occurrence_per_d_cluster = cluster_summary (data, original_data, vectorization, model, 
-        n_word_reps=20, logger=None)
+        logger=None)
 
     ### DBG: testing different methods of labelling and cluster sizes
     if alg == 'nbvd':
@@ -708,27 +750,26 @@ def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centro
     ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
     plt.show()
 
-def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vec, bar_plot=True, logger=None):
+def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vec, bar_plot=True, n_word_reps=20, logger=None):
     model = FooClass()
     model.row_labels_, model.column_labels_ = row_col_labels
     model.centroids = row_col_centroids
     model.cluster_assoc = cluster_assoc
-    _, w_occurrence_per_d_cluster = cluster_summary(data, original_data, vec, model, n_word_reps=20, logger=logger)
+    _, w_occurrence_per_d_cluster = cluster_summary(data, original_data, vec, model, n_word_reps=n_word_reps, logger=logger)
     if bar_plot:
-        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=20)
+        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=n_word_reps)
 
 
 def misc_statistics (model, new_row_centroids, new_col_centroids, vec, new_new_abstracts):
     row_dist = norm(model.centroids[0] - new_row_centroids) # frobenius norm
     col_dist = norm(model.centroids[1] - new_col_centroids) # frobenius norm
-    print(f"Centroid difference for original and new abstracts:\n({row_dist}, {col_dist})")
+    print(f"Centroid difference for original and new abstracts:\n{row_dist}")
     orig_r_clust_avg = get_centroids_by_cluster(model.data, model.row_labels_, model.n_row_clusters)
     orig_c_clust_avg = get_centroids_by_cluster(model.data.T, model.column_labels_, model.n_col_clusters)
     row_dist = norm(orig_r_clust_avg - new_row_centroids) # frobenius norm
-    col_dist = norm(orig_c_clust_avg - new_col_centroids) # frobenius norm
-    print(f"Centroid difference for original and new abstracts (2nd way):\n({row_dist}, {col_dist})")
-    print(f"norm for original centroids: {norm(model.centroids[0])}, {norm(model.centroids[1])}")
-    print(f"mean for original centroids: {np.mean(model.centroids[0])}, {np.mean(model.centroids[1])}")
+    print(f"Centroid difference for original cluster avg and new abstracts:\n{row_dist}")
+    print(f"norm for original centroids (r,c): {norm(model.centroids[0])}, {norm(model.centroids[1])}")
+    print(f"mean for original centroids (r,c): {np.mean(model.centroids[0])}, {np.mean(model.centroids[1])}")
 
     # DBG
     s1 = set(vec.vocabulary_.keys())
@@ -752,6 +793,7 @@ def main():
     os.makedirs('.embedding_cache', exist_ok=True)
     # do co-clustering
     data, vec = do_vectorization(new_abstracts, VECTORIZATION, **vec_kwargs)
+    #print("norm avgs:", np.mean(norm(data, axis=1)), np.mean(norm(data.T, axis=1))) # docs are normalized; words arent
 
     if ATTEMPTS_MAX > 1:
         attempt = 0
@@ -768,21 +810,23 @@ def main():
         model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
         
         # analyze new abstracts
-        print("@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#","\t\tNEW ABSTRACTS\t\t","@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#", sep="\n")
-        new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 532+13, abstracts)
-        Z, new_abs_classification, new_word_classification = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
-        print_silhouette_score(Z, new_abs_classification, new_word_classification)
-        new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
-        new_col_centroids = get_centroids_by_cluster(Z.T, new_word_classification, model.n_col_clusters)
-        new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 
-            (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, bar_plot=SHOW_IMAGES, logger=None)
-        
-        # distance metrics and vocabulary sizes
-        misc_statistics(model, new_row_centroids, new_col_centroids, vec, new_new_abstracts)
+        if NEW_ABS:
+            print("@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#","\t\tNEW ABSTRACTS\t\t","@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#", sep="\n")
+            new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 532+13, abstracts)
+            Z, new_abs_classification, _ = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
+            new_word_classification = model.column_labels_
+            print_silhouette_score(Z, new_abs_classification, new_word_classification)
+            new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+            new_col_centroids = model.centroids[1]
+            new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 
+                (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, bar_plot=SHOW_IMAGES, logger=None)
+            
+            # distance metrics and vocabulary sizes
+            misc_statistics(model, new_row_centroids, new_col_centroids, vec, new_new_abstracts)
 
-        # reduced-dimension scatter plot for new abstracts
-        if SHOW_IMAGES:
-            new_abs_reduced_centroids_plot(model, Z, new_abs_classification, new_row_centroids, RNG=RNG)
+            # reduced-dimension scatter plot for new abstracts
+            if SHOW_IMAGES:
+                new_abs_reduced_centroids_plot(model, Z, new_abs_classification, new_row_centroids, RNG=RNG)
         
 
     """
