@@ -74,7 +74,7 @@ rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 SHOW_IMAGES=False
-NEW_ABS=True
+NEW_ABS=False
 
 ############################################################################## 
 # to use a set number of cpus: 
@@ -188,15 +188,14 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
         if count >= n_representatives:
             return # stop yielding
 
-def get_representatives (data, labels, centroids, n_clusters, n_representatives=5, reverse=False, method='naive1', original_data=None, vec=None, kind=None) -> dict:
+def get_representatives (data, labels, centroids, n_clusters, n_representatives=5, reverse=False, method='naive_norm_tfidf', original_data=None, vec=None, kind=None, R=None, C=None) -> dict:
     cluster_representatives = {}
+    if not CENTROID_CANDIDATE_SELECTION:
+        centroids_ = get_centroids_by_cluster (data, labels, n_clusters)
+    else:
+        centroids_ = centroids
 
-    if method == 'naive1':
-        if not CENTROID_CANDIDATE_SELECTION:
-            centroids_ = get_centroids_by_cluster (data, labels, n_clusters)
-        else:
-            centroids_ = centroids
-        
+    if method == 'naive_norm_tfidf':
         # get squashed centroids and, for each sample, calculate distance to squashed_centroid
         # NOTE: sum of flattened Z (for each label) might be better? idk
         squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
@@ -209,14 +208,20 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
         all_distances = np.zeros((data.shape[0], n_clusters))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
+    elif method == 'centroid_dif':
+        # get squashed centroids and, for each sample, calculate distance to squashed_centroid
+        # NOTE: sum of flattened Z (for each label) might be better? idk
 
-        """ # BAD
+        all_distances = np.zeros((data.shape[0], n_clusters))
+        for i, r in enumerate(data):
+            all_distances[i] = [norm(r-centroid_sum) for centroid_sum in centroids_]
+        """ # faster difference i think
         c_shape = centroids_.shape
         data_extra = data.reshape(*data.shape, 1).repeat(c_shape[1], axis=2) # add extra dim for clusters
         c_extra = centroids_.T.reshape(c_shape[1], c_shape[0], 1).repeat(data.shape[0], axis=2).T # add extra dim for number of samples
         all_distances = norm(data_extra-c_extra, axis=1)
         """
-    elif method == 'naive2':
+    elif method == 'naive_sum_tf':
         cv = CountVectorizer(vocabulary=vec.vocabulary_, **vec_kwargs)
         doc_w_counts = cv.fit_transform(original_data).toarray()
         if kind == 'docs':
@@ -225,9 +230,15 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
         elif kind == 'words':
             total_docs_per_word = np.sum(doc_w_counts, axis=0)
             dists = total_docs_per_word
-        reverse = not reverse
+        reverse = not reverse # small distance ~ big sum
         
         all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
+    elif method == 'matrix_assoc':
+        reverse = not reverse # small distance ~ big assoc
+        if kind == 'docs':
+            all_distances = R
+        elif kind == 'words':
+            all_distances = C.T
 
     # get representatives
     for c in range(n_clusters):
@@ -293,15 +304,24 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
                     relevant_coclusters.append((i,j))
     
     # get representatives
+    """ # 1
     row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, 
         k, n_representatives=n_doc_reps)
     col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, 
         l, n_representatives=n_word_reps)
+    """
+    # 3
+    row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, k, n_representatives=n_doc_reps, method='naive_norm_tfidf', original_data=original_data, vec=vec, R=model.R, kind='docs')
+    col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=n_word_reps, method='naive_norm_tfidf', original_data=original_data, vec=vec, C=model.C, kind='words')
+
     """# DBG
     row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10)
     col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10)
-    row_cluster_representatives2 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='naive2', original_data=original_data, vec=vec, kind='docs')
-    col_cluster_representatives2 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='naive2', original_data=original_data, vec=vec, kind='words')
+    row_cluster_representatives2 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='docs')
+    col_cluster_representatives2 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='words')
+    row_cluster_representatives3 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, R=model.R, kind='docs')
+    col_cluster_representatives3 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, C=model.C, kind='words')
+    
     print("docs:")
     print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
     print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives.values(), row_cluster_representatives2.values())], sep="\n")
@@ -761,12 +781,11 @@ def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_c
 
 
 def misc_statistics (model, new_row_centroids, new_col_centroids, vec, new_new_abstracts):
-    row_dist = norm(model.centroids[0] - new_row_centroids) # frobenius norm
-    col_dist = norm(model.centroids[1] - new_col_centroids) # frobenius norm
+    row_dist = norm(model.centroids[0] - new_row_centroids, axis=0) # frobenius norm
     print(f"Centroid difference for original and new abstracts:\n{row_dist}")
     orig_r_clust_avg = get_centroids_by_cluster(model.data, model.row_labels_, model.n_row_clusters)
     orig_c_clust_avg = get_centroids_by_cluster(model.data.T, model.column_labels_, model.n_col_clusters)
-    row_dist = norm(orig_r_clust_avg - new_row_centroids) # frobenius norm
+    row_dist = norm(orig_r_clust_avg - new_row_centroids, axis=0) # frobenius norm
     print(f"Centroid difference for original cluster avg and new abstracts:\n{row_dist}")
     print(f"norm for original centroids (r,c): {norm(model.centroids[0])}, {norm(model.centroids[1])}")
     print(f"mean for original centroids (r,c): {np.mean(model.centroids[0])}, {np.mean(model.centroids[1])}")
