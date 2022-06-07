@@ -303,6 +303,22 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
                 if cluster_assoc[i,j]:
                     relevant_coclusters.append((i,j))
     
+    #"""# DBG
+    row_cluster_representatives1 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10)
+    col_cluster_representatives1 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10)
+    row_cluster_representatives2 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='docs')
+    col_cluster_representatives2 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='words')
+    row_cluster_representatives3 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, R=model.R, kind='docs')
+    col_cluster_representatives3 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, C=model.C, kind='words')
+    """
+    print("docs:")
+    print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
+    print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives1.values(), row_cluster_representatives2.values())], sep="\n")
+    print("\nwords:")
+    print(*[f"{t[0]}\n{t[1]}" for t in zip(col_cluster_representatives.items(), col_cluster_representatives2.items())], sep="\n")
+    print("comum:", *[set(c1).intersection(set(c2)) for c1,c2 in zip(col_cluster_representatives1.values(), col_cluster_representatives2.values())], sep="\n")
+    """
+    
     # get representatives
     """ # 1
     row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, 
@@ -313,22 +329,6 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
     # 3
     row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, k, n_representatives=n_doc_reps, method='naive_norm_tfidf', original_data=original_data, vec=vec, R=model.R, kind='docs')
     col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=n_word_reps, method='naive_norm_tfidf', original_data=original_data, vec=vec, C=model.C, kind='words')
-
-    """# DBG
-    row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10)
-    col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10)
-    row_cluster_representatives2 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='docs')
-    col_cluster_representatives2 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='words')
-    row_cluster_representatives3 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, R=model.R, kind='docs')
-    col_cluster_representatives3 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, C=model.C, kind='words')
-    
-    print("docs:")
-    print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
-    print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives.values(), row_cluster_representatives2.values())], sep="\n")
-    print("\nwords:")
-    print(*[f"{t[0]}\n{t[1]}" for t in zip(col_cluster_representatives.items(), col_cluster_representatives2.items())], sep="\n")
-    print("comum:", *[set(c1).intersection(set(c2)) for c1,c2 in zip(col_cluster_representatives.values(), col_cluster_representatives2.values())], sep="\n")
-    """
 
     # documents
     print_or_log("DOCUMENTS:\n")
@@ -412,6 +412,23 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
                         oc_other_str = "".join([f"({rclust}:{oc_other:.0f}%)" for rclust,oc_other in oc_others])
                         to_print.append(f"{word}(T:{oc_top:.0f}%)(B:{oc_bottom:.0f}%) {oc_other_str}")
                 print_or_log(", ".join(to_print)+"\n--------------------------------------------------------\n")
+    
+    ## pegar so os representantes para 3 metodos
+    # primeiro centroides e metodo1
+    # dps metodo 2 como *
+    # metodo 3 como +
+    # pca, pal, ax = centroid_scatter_plot(samples, centroids, labels, title)
+    """
+    row_centroids = model.centroids[0]
+    _, _, ax = centroid_scatter_plot(Z, row_centroids, new_abs_classification, title="New samples and Row centroids", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
+    new_points = normalize(new_centroids.T, axis=1)
+    reduced_new_points = model.row_pca.transform(new_points)
+
+    # plot reduced points
+    for i, point in enumerate(reduced_new_points):
+        ax.scatter(*point, color=model.row_c_palette[i], marker="*", s=200, alpha=1)            
+    """
+
     return (row_cluster_representatives, col_cluster_representatives), w_occurrence_per_d_cluster
 
 def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps):
