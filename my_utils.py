@@ -344,17 +344,14 @@ def get_centroids_by_cluster (data, labels, n_clusters):
         centroids[:, k] = np.mean(data[mask, :], axis=0)
     return centroids
 
-def centroid_scatter_plot (samples, centroids, labels, title, pca=None, palette=None, RNG=None):
+def centroid_scatter_plot (samples, centroids, labels, title, pca=None, palette=None, centroid_size=400, RNG=None):
     """Dimension-reduced plot of samples and centroids, coloring points according to labels.
     """
     RNG = RNG or np.random.default_rng()
     # seed = RNG.integers(0, 2147483647) #DBG: better colors not doing an additional call to RNG
-    # TODO: kind should be just a title string
 
     _, n = centroids.shape
     points = normalize(np.vstack([samples, centroids.T]), axis=1) # normalize before PCA
-    #pca = TruncatedSVD(n_components=2)
-    #pca = KernelPCA(n_components=2)
     if not pca:
         pca = PCA(n_components=2, random_state=42)
         pca.fit(points)
@@ -370,8 +367,8 @@ def centroid_scatter_plot (samples, centroids, labels, title, pca=None, palette=
     # plot centroids in a way that allows us to label them
     things = []
     for i in range(n):
-        # note: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
-        thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=400, alpha=0.8)
+        # NOTE: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
+        thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=centroid_size, alpha=0.8)
         things.append(thing)
     ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
     legend = ax.legend(things, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
