@@ -18,10 +18,7 @@ from sklearn.preprocessing import normalize
 import nltk
 
 from collections import Counter, OrderedDict # OrderedDict is redundant as of Python 3.7
-import itertools
-from pprint import pprint
 import sys,os,pickle,re
-import algorithms
 from pyqtgraph.Qt import QtCore, QtGui
 #import pyqtgraph.opengl as gl
 import pyqtgraph as pg
@@ -32,8 +29,6 @@ from my_utils import *
 
 #downloads = [nltk.download('stopwords'), nltk.download('averaged_perceptron_tagger'), nltk.download('universal_tagset')]
 stop_words_nltk=nltk.corpus.stopwords.words('english')
-import sklearn
-np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
 
 stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre','post', # preffixes
     'ltd','sa','SA','copyright','eg','etc','elsevier','springer','springer_verlag','inc','publishing','reserved', # copyright
@@ -61,20 +56,20 @@ vec_kwargs = Bunch(min_df=4, stop_words=stop_words_nltk, lowercase=False)
 
 W2V_DIM=100
 ALG='nbvd'
-ATTEMPTS_MAX=1
-SYMMETRIC = False # (NBVD) use symmetric NBVD algorithm?
 WAIT_TIME = 4 # wait time between tasks
+LABELING_METHOD="centroids method" # TODO: implement changing to not fancy
+CLUSTER_AVG_IS_CENTROID=True
+KEEP_WORD_REPS=False
+
+rerun_embedding=True
 LABEL_CHECK = True
 CENTROID_CHECK = True
 COCLUSTER_CHECK = True
 NORM_PLOT = False # (NBVD) display norm plot
-LABELING_METHOD="centroids method" # TODO: implement changing to not fancy
-CENTROID_CANDIDATE_SELECTION=False
-rerun_embedding=True
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 SHOW_IMAGES=False
-NEW_ABS=False
+NEW_ABS=True
 
 ############################################################################## 
 # to use a set number of cpus: 
@@ -174,7 +169,7 @@ class Preprocessor:
         unique_sentences = set()
         newX = []
         for i,sentence in enumerate(X_list):
-            if sentence not in unique_sentences:
+            if len(sentence) > 300 and sentence not in unique_sentences:
                 unique_sentences.add(sentence)
                 newX.append(self.preprocess(sentence))
         return newX
@@ -188,30 +183,43 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
         if count >= n_representatives:
             return # stop yielding
 
-def get_representatives (data, labels, centroids, n_clusters, n_representatives=5, reverse=False, method='naive_norm_tfidf', original_data=None, vec=None, kind=None, R=None, C=None) -> dict:
+def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, method='naive_sum_tfidf', kind=None) -> dict:
     cluster_representatives = {}
-    if not CENTROID_CANDIDATE_SELECTION:
-        centroids_ = get_centroids_by_cluster (data, labels, n_clusters)
-    else:
-        centroids_ = centroids
 
-    if method == 'naive_norm_tfidf':
-        # get squashed centroids and, for each sample, calculate distance to squashed_centroid
-        # NOTE: sum of flattened Z (for each label) might be better? idk
+    # get relevant properties
+    if kind == 'docs':
+        labels = model.row_labels_
+    elif kind == 'words':
+        labels = model.column_labels_
+    else:
+        raise Exception("get_representatives: must specify 'kind'")
+    original_data = model.__original_data if hasattr(model, "__original_data") else None
+    vec = model.__vectorization if hasattr(model, "__vectorization") else None
+    if hasattr(model, "centroids"):
+        if kind == 'docs':
+            centroids = model.centroids[0]
+        elif kind == 'words':
+            centroids = model.centroids[1]
+        else:
+            centroids = None
+        centroids_ = get_centroids_by_cluster(data, labels, n_clusters) if CLUSTER_AVG_IS_CENTROID else centroids
+    if hasattr(model, "R"):
+        R,C = model.R,model.C
+
+    if method == 'naive_sum_tfidf':
+        reverse = not reverse # small distance ~ big sum
+        dists = np.sum(data, axis=1) # rows are docs unless data is transposed
+        all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
+    elif method == 'naive_norm_tfidf':
         squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
-        #squashed_centroids = centroids_.T # BAD
         
         big = max(1000, np.sum(np.abs(data)))
         squashed_centroids[:] = big
 
-        #print("sqshd", squashed_centroids)
         all_distances = np.zeros((data.shape[0], n_clusters))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
-    elif method == 'centroid_dif':
-        # get squashed centroids and, for each sample, calculate distance to squashed_centroid
-        # NOTE: sum of flattened Z (for each label) might be better? idk
-
+    elif method == 'centroid_dif': # DBG
         all_distances = np.zeros((data.shape[0], n_clusters))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid_sum) for centroid_sum in centroids_]
@@ -221,17 +229,17 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
         c_extra = centroids_.T.reshape(c_shape[1], c_shape[0], 1).repeat(data.shape[0], axis=2).T # add extra dim for number of samples
         all_distances = norm(data_extra-c_extra, axis=1)
         """
-    elif method == 'naive_sum_tf':
+    elif method == 'naive_sum_tf': # DBG
+        reverse = not reverse # small distance ~ big sum
         cv = CountVectorizer(vocabulary=vec.vocabulary_, **vec_kwargs)
         doc_w_counts = cv.fit_transform(original_data).toarray()
+        
         if kind == 'docs':
             total_words_per_doc = np.sum(doc_w_counts, axis=1)
             dists = total_words_per_doc
         elif kind == 'words':
             total_docs_per_word = np.sum(doc_w_counts, axis=0)
             dists = total_docs_per_word
-        reverse = not reverse # small distance ~ big sum
-        
         all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
     elif method == 'matrix_assoc':
         reverse = not reverse # small distance ~ big assoc
@@ -249,19 +257,6 @@ def get_representatives (data, labels, centroids, n_clusters, n_representatives=
         if rep_candidates: # if anyones left
             cluster_representatives[c] = rep_candidates   
     
-    """ #DBG
-    print("\ndata min max", np.amin(data[data!=0]) , np.amax(data))
-    dataz = np.sum(data == 0,axis=1)
-    print("dataz min max", np.amin(dataz), np.amax(dataz))
-    selected_things = [(c,data[reps]) for c,reps in sorted(cluster_representatives.items())]
-    for t in selected_things:
-        print("\ncluster", t[0])
-        #print("norms:", norm(t[1], axis=1))
-        print("zer:", np.sum(t[1] == 0, axis=1))
-        rep_idx = cluster_representatives[t[0]]
-        ddd = data[rep_idx]
-        print("sum:",np.sum(ddd, axis=1))
-        #print("idx:",rep_idx)"""
     return cluster_representatives
 
 def calculate_occurrence (word, original_data, indices):
@@ -271,7 +266,7 @@ def calculate_occurrence (word, original_data, indices):
             count += 1
     return count
 
-def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, verbose=True, logger=None):
+def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, word_reps=None, verbose=True, logger=None):
     """Most representative documents/words are chosen based on distance to the (squashed) average of the assigned cluster.
     w_occurrence_per_d_cluster is a dict with length equal to n_word_reps*n_col_clusters and values corresponding to a dict of Bunch
     of the form 
@@ -279,15 +274,20 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
         assigned_dc = associated document cluster, 
         assigned_wc = associated word cluster, .
     (If d_cluster != cocluster-associated document cluster, no occurrence in bottom documents.)
-    
+    Note: if word_reps is given, word representatives are not calculated.
+
     Returns: ((most representative documents, most representative words), word occurrence per document cluster)"""
 
     print_or_log = logger.info if logger else (print if verbose else lambda s : None)
     has_cocluster_info = hasattr(model, "cluster_assoc")
     row_centroids, col_centroids = model.centroids
     row_labels_, column_labels_ = model.row_labels_, model.column_labels_
+    vec, original_data = model.__vectorization, model.__original_data
     m, k = row_centroids.shape
     n, l = col_centroids.shape
+    smallest_rcluster_size = min(np.bincount(row_labels_))
+    if smallest_rcluster_size == 0:
+        warnings.warn("A document cluster has size 0..", RuntimeWarning, stacklevel=2)
 
     if has_cocluster_info:
         cluster_assoc = model.cluster_assoc
@@ -303,14 +303,14 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
                 if cluster_assoc[i,j]:
                     relevant_coclusters.append((i,j))
     
-    #"""# DBG
-    row_cluster_representatives1 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10)
-    col_cluster_representatives1 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10)
-    row_cluster_representatives2 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='docs')
-    col_cluster_representatives2 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='naive_sum_tf', original_data=original_data, vec=vec, kind='words')
-    row_cluster_representatives3 = get_representatives(data, row_labels_, row_centroids, k, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, R=model.R, kind='docs')
-    col_cluster_representatives3 = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=10, method='matrix_assoc', original_data=original_data, vec=vec, C=model.C, kind='words')
-    """
+    """# DBG
+    row_cluster_representatives1 = get_representatives(data, model, k, n_representatives=10, kind='docs')
+    col_cluster_representatives1 = get_representatives(data.T, model, l, n_representatives=10, kind='words')
+    row_cluster_representatives2 = get_representatives(data, model, k, n_representatives=10, method='naive_sum_tf', kind='docs')
+    col_cluster_representatives2 = get_representatives(data.T, model, l, n_representatives=10, method='naive_sum_tf', kind='words')
+    row_cluster_representatives3 = get_representatives(data, model, k, n_representatives=10, method='matrix_assoc', kind='docs')
+    col_cluster_representatives3 = get_representatives(data.T, model, l, n_representatives=10, method='matrix_assoc', kind='words')
+
     print("docs:")
     print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
     print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives1.values(), row_cluster_representatives2.values())], sep="\n")
@@ -319,17 +319,12 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
     print("comum:", *[set(c1).intersection(set(c2)) for c1,c2 in zip(col_cluster_representatives1.values(), col_cluster_representatives2.values())], sep="\n")
     """
     
-    # get representatives
-    """ # 1
-    row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, 
-        k, n_representatives=n_doc_reps)
-    col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, 
-        l, n_representatives=n_word_reps)
-    """
-    # 3
-    row_cluster_representatives = get_representatives(data, row_labels_, row_centroids, k, n_representatives=n_doc_reps, method='naive_norm_tfidf', original_data=original_data, vec=vec, R=model.R, kind='docs')
-    col_cluster_representatives = get_representatives(data.T, column_labels_, col_centroids, l, n_representatives=n_word_reps, method='naive_norm_tfidf', original_data=original_data, vec=vec, C=model.C, kind='words')
-
+    # get row- and column-cluster representatives
+    row_cluster_representatives = get_representatives(data, model, k, n_representatives=n_doc_reps, method='naive_sum_tfidf', kind='docs')
+    if word_reps is None: # calculate word representatives if they are not given
+        col_cluster_representatives = get_representatives(data.T, model, l, n_representatives=n_word_reps, method='naive_sum_tfidf', kind='words')
+    else:
+        col_cluster_representatives = word_reps[:n_word_reps]
     # documents
     print_or_log("DOCUMENTS:\n")
     for i, reps in sorted(row_cluster_representatives.items()):
@@ -355,13 +350,15 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
             # cocluster analysis
             print_or_log("COCLUSTERS:")
             N = n_frequent
+            if smallest_rcluster_size < N and smallest_rcluster_size > 0:
+                N = smallest_rcluster_size
             # TODO: do top 10% / 20% / 25% instead?
             # TODO: account for clusters smaller than N; duct tape solution is to reduce N manually
             print_or_log(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
-            row_reps_topN = get_representatives(data, row_labels_, row_centroids, 
-                k, n_representatives=N)
-            row_reps_bottomN = get_representatives(data, row_labels_, row_centroids, 
-                k, n_representatives=N, reverse=True)
+            row_reps_topN = get_representatives(data, model, 
+                k, n_representatives=N, kind='docs')
+            row_reps_bottomN = get_representatives(data, model, 
+                k, n_representatives=N, reverse=True, kind='docs')
             
             # for each cocluster
             w_occurrence_per_d_cluster = OrderedDict() # store occurrence and dc info for each word
@@ -382,7 +379,7 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
                 # for each word, calculate its occurrence in each document cluster
                 for w in reps:
                     if dc not in row_reps_topN:
-                        print_or_log(f"dbg ## @#@ #@ {dc} not in row_reps!!!\n")
+                        warnigs.warn(f"## @#@ #@ {dc} not in row_reps!!!\n", UserWarning, stacklevel=2)
                         continue
                     else:
                         # occurrence for the dc in the cocluster
@@ -392,10 +389,7 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
                         
                         w_occurrence_per_d_cluster[word] = OrderedDict()
                         w_occurrence_per_d_cluster[word][dc] = Bunch(occ=(oc_top, oc_bottom), assigned_dc=dc, assigned_wc=wc)
-                        """
-                        main_dc_top_dict, main_dc_bottom_dict = w_occurrence_per_d_cluster[dc][0], w_occurrence_per_d_cluster[dc][1]
-                        main_dc_top_dict[word], main_dc_bottom_dict[word] = oc_top, oc_bottom
-                        """
+
                         # occurrence for other dcs
                         oc_others = []
                         for rclust in sorted(row_reps_topN.keys()):
@@ -403,12 +397,9 @@ def cluster_summary (data, original_data, vec, model, n_doc_reps=5, n_word_reps=
                                 continue
                             oc_other = 100/N * calculate_occurrence(word, original_data, row_reps_topN[rclust])
                             oc_others.append((rclust, oc_other))
-                            
                             w_occurrence_per_d_cluster[word][rclust] = Bunch(occ=(oc_other, ), assigned_dc=dc, assigned_wc=wc)
-                            """
-                            other_dc_dict = w_occurrence_per_d_cluster[rclust][0]
-                            other_dc_dict[word] = oc_other
-                            """
+
+                        # print (later) word occurrence in each cluster
                         oc_other_str = "".join([f"({rclust}:{oc_other:.0f}%)" for rclust,oc_other in oc_others])
                         to_print.append(f"{word}(T:{oc_top:.0f}%)(B:{oc_bottom:.0f}%) {oc_other_str}")
                 print_or_log(", ".join(to_print)+"\n--------------------------------------------------------\n")
@@ -435,7 +426,7 @@ def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps):
     n_hplots, n_vplots = math.ceil(math.sqrt(n_word_reps)), round(math.sqrt(n_word_reps)) # more rows than columns
     # DBG # im pretty sure this is correct for all reasonable numbers
     if n_hplots * n_vplots < n_word_reps:
-        raise Exception("mistake somewhere")
+        raise Exception("cocluster_words_bar_plot: math?")
     
     # translate w_occurrence_per_d_cluster into bar plots
     current_dc, current_ax = None, 1
@@ -577,7 +568,6 @@ def kmeans_fix_labels (labels, RNG, probability=0.5):
 def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
         show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None, iter_max=2000):
     RNG = np.random.default_rng(RNG_SEED)
-    # TODO: add vec to model as attribute for cleaner code
 
     if logger:
         logger.info(f"shape: {data.shape}")
@@ -593,7 +583,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
 
     # do co-clustering
     if alg == 'nbvd':
-        model = NBVD_coclustering(data, symmetric=SYMMETRIC, n_row_clusters=N_ROW_CLUSTERS, 
+        model = NBVD_coclustering(data, n_row_clusters=N_ROW_CLUSTERS, 
             n_col_clusters=N_COL_CLUSTERS, n_attempts=1, iter_max=iter_max, random_state=RNG_SEED, 
             verbose=False, save_history=MOVIE, save_norm_history=NORM_PLOT, logger=logger)
     elif alg == 'wbkm':
@@ -602,12 +592,10 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     elif alg == 'spectralco':
         model = SpectralCoclustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
         model.fit(data)
-    elif alg == 'nbvd_waldyr':
-        U, S, V, resNEW, itr = algorithms.NBVD(data, N_ROW_CLUSTERS, N_COL_CLUSTERS, itrMAX=2000)
-        model = FooClass()
-        model.U, model.S, model.V = U, S, V
-        model.biclusters_, model.row_labels_, model.column_labels_ = NBVD_coclustering.get_stuff(U, V.T)
-        print("resNEW, itr:", resNEW, itr) # resNEW is norm squared; itr is iteration_no
+
+    # add extra info to model
+    model.__original_data = original_data
+    model.__vectorization = vectorization
     
     """ # clumps most docs into 1 cluster
     elif alg == 'kmeans':
@@ -625,20 +613,6 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         print("col labels", np.bincount(model.column_labels_))
         model.centroids = (model.kmeansR.cluster_centers_.T, model.kmeansC.cluster_centers_.T)
         model.cluster_assoc = kmeans_cluster_assoc(model, original_data, vectorization, vec_kwargs, model.row_labels_, model.column_labels_)
-    elif alg == 'spectral':
-        model = FooClass()
-        model.data, model.n_row_clusters, model.n_col_clusters = data, N_ROW_CLUSTERS, N_COL_CLUSTERS
-        
-        model.kmeansR = SpectralClustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
-        model.kmeansR.fit(data)
-        model.row_labels_ = np.array(model.kmeansR.labels_)
-        model.kmeansC = SpectralClustering(n_clusters=N_COL_CLUSTERS, random_state=RNG_SEED)
-        model.kmeansC.fit(data.T)
-        print("row labels", np.bincount(model.row_labels_))
-        model.column_labels_ = np.array(model.kmeansC.labels_)
-        print("col labels", np.bincount(model.column_labels_))
-        #model.centroids = (model.kmeansR.cluster_centers_.T, model.kmeansC.cluster_centers_.T)
-        model.cluster_assoc = kmeans_cluster_assoc(model, original_data, vectorization, vec_kwargs, model.row_labels_, model.column_labels_)
     """
 
     # show animation of clustering process
@@ -654,35 +628,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     silhouette = print_silhouette_score(data, model.row_labels_, model.column_labels_, logger=logger)
 
     # textual analysis
-    representatives, w_occurrence_per_d_cluster = cluster_summary (data, original_data, vectorization, model, 
-        logger=None)
+    representatives, w_occurrence_per_d_cluster = cluster_summary(data, model, logger=None)
 
-    ### DBG: testing different methods of labelling and cluster sizes
-    if alg == 'nbvd':
-        _, row1, col1 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="not fancy")
-        #_, row2, col2 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, method="fancy")
-        _, row3, col3 = NBVD_coclustering.get_stuff(model.R, model.C, model.B, model.data, model.centroids, method="centroids")
-
-        print("not fancy")
-        silhouette2 = print_silhouette_score(data, row1, col1, logger=logger)
-        #print("fancy")
-        #silhouette2 = print_silhouette_score(data, row2, col2, logger=logger)
-        print("centroids")
-        silhouette3 = print_silhouette_score(data, row3, col3, logger=logger)
-        """print("rows:")
-        
-        thing = lambda arr : sorted(Counter(arr).items())
-        print(thing(row1), 
-            #thing(row2),
-            thing(row3), sep="\n")
-        #print(row1)
-        #print(row2)
-        #print(row3)
-        print("cols:")
-        print(thing(col1), 
-            #thing(col2), 
-            thing(col3), sep="\n")
-        """
     if show_images:
         # shade lines/columns of original dataset
         if LABEL_CHECK:
@@ -732,11 +679,11 @@ def load_new_new_abstracts (path, n_abstracts, old_abstracts):
     df = pd.read_csv(path, delimiter=',')
     new_new_abstracts = df['abstract'][:n_abstracts].to_list()
     new_new_not_repeat = [ab for ab in new_new_abstracts if ab not in old_abstracts_S]
-    print(f"\nnew abstracts: {len(new_new_abstracts)} | repeat abstracts: {len(new_new_abstracts) - len(new_new_not_repeat)}")
-    return Preprocessor().transform(new_new_not_repeat) # preprocess and eliminate duplicates
+    new_processed_abstracts = Preprocessor().transform(new_new_not_repeat) # preprocess and eliminate duplicates
+    print(f"\nnew abstracts: {len(new_processed_abstracts)} | old abstracts present: {len(new_new_abstracts) - len(new_new_not_repeat)}")
+    return new_processed_abstracts, df
 
 def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=None, verbose=False):
-    # TODO: clean up classification
     print_or_log = logger.info if logger else print
     row_centroids, col_centroids = model.centroids
     m, k = row_centroids.shape
@@ -745,34 +692,17 @@ def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=
     # vectorize abstracts
     Z = vec.transform(extra_abstracts).toarray()
     n, _ = Z.shape
-    print_or_log(f"Z: {Z.shape} r_centroids: {row_centroids.shape} c_centroids: {col_centroids.shape}")
 
-    # classify rows
-    Z_row_extra = Z.reshape(*Z.shape, 1).repeat(k, axis=2) # add extra dim for clusters
-    c_row_extra = row_centroids.T.reshape(k, m, 1).repeat(n, axis=2).T # add extra dim for number of samples
-    row_distances = norm(Z_row_extra-c_row_extra, axis=1)
-    row_classification = np.argmin(row_distances, axis=1)
-
-    # classify columns
-    Z_col_extra = Z.T.reshape(*Z.T.shape, 1).repeat(l, axis=2) # add extra dim for clusters
-    c_col_extra = col_centroids.T.reshape(l, n, 1).repeat(m, axis=2).T # add extra dim for number of samples
-    col_distances = norm(Z_col_extra-c_col_extra, axis=1)
-    col_classification = np.argmin(col_distances, axis=1)
-
-    # command-line results
-    if verbose:
-        print_or_log("\nNEW ABSTRACTS (assigned cluster and (clipped) text):")
-        to_print = []
-        for i,row in enumerate(extra_abstracts):
-            to_print.append(f"[{row_classification[i]}]: {row[:200]}\n\n")
-        print_or_log("".join(to_print))
+    # classify rows and columns
+    row_classification = NBVD_coclustering.get_labels(Z, row_centroids, k, m, n)
+    col_classification = model.column_labels_
     return (Z, row_classification, col_classification)
 
 def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centroids, RNG=None):
     RNG = RNG or np.default_rng()
     # calculate reduced centroids
     row_centroids = model.centroids[0]
-    print(f"dbg: Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
+    print(f"DBG: Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
     _, _, ax = centroid_scatter_plot(Z, row_centroids, new_abs_classification, title="New samples and Row centroids", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
     new_points = normalize(new_centroids.T, axis=1)
     reduced_new_points = model.row_pca.transform(new_points)
@@ -787,12 +717,17 @@ def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centro
     ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
     plt.show()
 
-def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vec, bar_plot=True, n_word_reps=20, logger=None):
+def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vectorization, bar_plot=True, n_word_reps=20, use_orig_word_reps=False, logger=None):
     model = FooClass()
     model.row_labels_, model.column_labels_ = row_col_labels
     model.centroids = row_col_centroids
     model.cluster_assoc = cluster_assoc
-    _, w_occurrence_per_d_cluster = cluster_summary(data, original_data, vec, model, n_word_reps=n_word_reps, logger=logger)
+    model.__vectorization, model.__original_data = vectorization, original_data
+    if use_orig_word_reps:
+        word_reps = get_representatives(data.T, model, l, n_representatives=n_word_reps, method='naive_sum_tfidf', kind='words')
+    else:
+        word_reps = None
+    _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, word_reps=word_reps, logger=logger)
     if bar_plot:
         cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=n_word_reps)
 
@@ -819,81 +754,34 @@ def main():
     global RNG_SEED
     RNG, RNG_SEED = start_default_rng(seed=RNG_SEED)
     np.set_printoptions(edgeitems=5, threshold=sys.maxsize,linewidth=95) # very personal preferences :)
+    os.makedirs('.embedding_cache', exist_ok=True)
 
     # read and process
-    df = pd.read_csv('pira.csv', delimiter=';')
-    scientific = df[df['corpus'] == 1]
-    abstracts = scientific['abstract']
+    df = pd.read_csv('data/artigosUtilizados.csv', delimiter=',')
+    abstracts = df['abstract']
     new_abstracts = Preprocessor().transform(abstracts)
 
-    os.makedirs('.embedding_cache', exist_ok=True)
     # do co-clustering
+    # NOTE: docs are normalized (courtesy of sklearn); words arent
     data, vec = do_vectorization(new_abstracts, VECTORIZATION, **vec_kwargs)
-    #print("norm avgs:", np.mean(norm(data, axis=1)), np.mean(norm(data.T, axis=1))) # docs are normalized; words arent
+    model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
 
-    if ATTEMPTS_MAX > 1:
-        attempt = 0
-        while attempt < ATTEMPTS_MAX:
-            try:
-                results = do_task_single(data, new_abstracts, vec, only_one = False, alg=ALG, RNG_SEED=RNG_SEED+attempt, show_images=SHOW_IMAGES)
-                plt.pause(25)
-            except Exception as e:
-                print(str(e))
-                time.sleep(2)
-            finally:
-                attempt += 1
-    else:
-        model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
+    # analyze new abstracts
+    if NEW_ABS:
+        print("@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#","\t\tNEW ABSTRACTS\t\t","@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#", sep="\n")
+        new_new_abstracts, df_new_abs = load_new_new_abstracts("data/artigosNaoUtilizados.csv", 496+20, abstracts)
+        Z, new_abs_classification, _ = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
+        print_silhouette_score(Z, new_abs_classification, model.column_labels_)
+        new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+        new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, model.column_labels_), 
+            (new_row_centroids, model.centroids[1]), model.cluster_assoc, vec, use_orig_word_reps=KEEP_WORD_REPS, bar_plot=SHOW_IMAGES, logger=None)
         
-        # analyze new abstracts
-        if NEW_ABS:
-            print("@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#","\t\tNEW ABSTRACTS\t\t","@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#", sep="\n")
-            new_new_abstracts = load_new_new_abstracts("pira_informacoes/artigosNaoUtilizados.csv", 532+13, abstracts)
-            Z, new_abs_classification, _ = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
-            new_word_classification = model.column_labels_
-            print_silhouette_score(Z, new_abs_classification, new_word_classification)
-            new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
-            new_col_centroids = model.centroids[1]
-            new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, new_word_classification), 
-                (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, bar_plot=SHOW_IMAGES, logger=None)
-            
-            # distance metrics and vocabulary sizes
-            misc_statistics(model, new_row_centroids, new_col_centroids, vec, new_new_abstracts)
+        # distance metrics and vocabulary sizes
+        misc_statistics(model, new_row_centroids, model.centroids[1], vec, new_new_abstracts)
 
-            # reduced-dimension scatter plot for new abstracts
-            if SHOW_IMAGES:
-                new_abs_reduced_centroids_plot(model, Z, new_abs_classification, new_row_centroids, RNG=RNG)
-        
+        # reduced-dimension scatter plot for new abstracts
+        if SHOW_IMAGES:
+            new_abs_reduced_centroids_plot(model, Z, new_abs_classification, new_row_centroids, RNG=RNG)
 
-    """
-    import itertools
-    def dict_product(dicts):
-        return (dict(zip(dicts, x)) for x in itertools.product(*dicts.values()))
-
-    vec_options = ['count']
-    iter_max_options = [2000, 10000]
-    vec_kwargs_options = list(dict_product(dict(stop_words=["english", None], min_df=[1, 10], max_df=[1.0, 0.9], max_features=[1000, 2500, 5000, 10000])))
-    full_options = [(vec, vec_kwargs, iter_max) for vec in vec_options for vec_kwargs in vec_kwargs_options for iter_max in iter_max_options]
-    for vectorization, vec_kwargs, iter_max in full_options:
-        print("------------------------------------------------------------")
-        print(f"options:\nvectorizer: {vectorization}\nvec_kwargs: {vec_kwargs}\niter_max: {iter_max}")
-        data, vec = do_vectorization(new_abstracts, VECTORIZATION, **vec_kwargs)
-
-        os.makedirs('.embedding_cache', exist_ok=True)
-        # do co-clustering
-        if ATTEMPTS_MAX > 1:
-            attempt = 0
-            while attempt < ATTEMPTS_MAX:
-                try:
-                    results = do_task_single(data, new_abstracts, vec, only_one = False, alg=ALG, RNG_SEED=RNG_SEED+attempt)
-                    plt.pause(25)
-                except Exception as e:
-                    print(str(e))
-                    time.sleep(2)
-                finally:
-                    attempt += 1
-        else:
-            do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=iter_max, RNG_SEED=RNG_SEED)
-    """
 if __name__ == "__main__":
     main()
