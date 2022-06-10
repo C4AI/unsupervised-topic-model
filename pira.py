@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+#TODO: check if keeping row centroids makes more sense (i think keep column labels and row centroids)
+
 import numpy as np
 from numpy.linalg import inv, norm
 from numpy.random import default_rng
@@ -58,8 +60,8 @@ W2V_DIM=100
 ALG='nbvd'
 WAIT_TIME = 4 # wait time between tasks
 LABELING_METHOD="centroids method" # TODO: implement changing to not fancy
-CLUSTER_AVG_IS_CENTROID=True
-KEEP_WORD_REPS=False
+CLUSTER_AVG_IS_CENTROID=False
+KEEP_WORD_REPS=True # you have to for centroid method (were reusing the column centroid after all)
 
 rerun_embedding=True
 LABEL_CHECK = True
@@ -69,7 +71,7 @@ NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 SHOW_IMAGES=True
-NEW_ABS=False
+NEW_ABS=True
 
 ############################################################################## 
 # to use a set number of cpus: 
@@ -183,7 +185,7 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
         if count >= n_representatives:
             return # stop yielding
 
-def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, method='naive_sum_tfidf', kind=None) -> dict:
+def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, method='centroid_dif', kind=None) -> dict:
     cluster_representatives = {}
 
     # get relevant properties
@@ -201,6 +203,8 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         elif kind == 'words':
             centroids = model.centroids[1]
         centroids_ = get_centroids_by_cluster(data, labels, n_clusters) if CLUSTER_AVG_IS_CENTROID else centroids
+    else:
+        centroids_ = get_centroids_by_cluster(data, labels, n_clusters)
     if hasattr(model, "R"):
         R,C = model.R,model.C
 
@@ -219,7 +223,9 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
             all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
     elif method == 'centroid_dif': # DBG
         all_distances = np.zeros((data.shape[0], n_clusters))
-        for i, r in enumerate(data):
+        # NOTE: words are not normalized (but documents are)
+        n_data = normalize(data) if kind == 'words' else data
+        for i, r in enumerate(n_data):
             all_distances[i] = [norm(r-centroid_sum) for centroid_sum in centroids_.T]
         """ # faster difference i think
         c_shape = centroids_.shape
@@ -301,7 +307,7 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                 if cluster_assoc[i,j]:
                     relevant_coclusters.append((i,j))
     
-    #"""# DBG
+    """# DBG
     N_REPS_COMPARE=10
     row_cluster_representatives1 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='naive_sum_tfidf', kind='docs')
     col_cluster_representatives1 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='naive_sum_tfidf', kind='words')
@@ -309,7 +315,7 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
     col_cluster_representatives2 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='centroid_dif', kind='words')
     row_cluster_representatives3 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='matrix_assoc', kind='docs')
     col_cluster_representatives3 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='matrix_assoc', kind='words')
-    """
+
     print("docs:")
     print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
     print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives1.values(), row_cluster_representatives2.values())], sep="\n")
@@ -323,8 +329,9 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
     if word_reps is None: # calculate word representatives if they are not given
         col_cluster_representatives = get_representatives(data.T, model, l, n_representatives=n_word_reps, kind='words')
     else:
-        col_cluster_representatives = word_reps[:n_word_reps]
-    
+        col_cluster_representatives = dict([(k, reps[:n_word_reps]) for k,reps in word_reps.items()])
+    model.__row_reps, model.__col_reps = row_cluster_representatives, col_cluster_representatives
+
     # documents
     print_or_log("DOCUMENTS:\n")
     for i, reps in sorted(row_cluster_representatives.items()):
@@ -396,7 +403,7 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                 print_or_log(", ".join(to_print)+"\n--------------------------------------------------------\n")
     
     # visually compare different representative selection methods
-    if SHOW_IMAGES:
+    if SHOW_IMAGES and False:
         def __reps_dict_to_reps_list_and_labels (reps_dict, data, n_clusters):
             n_dim = data.shape[1]
             reps_matrix, reps_labels = np.zeros((n_clusters*N_REPS_COMPARE, n_dim), dtype=np.float64), np.zeros((n_clusters*N_REPS_COMPARE,), dtype=np.int64)
@@ -780,17 +787,14 @@ def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centro
     ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
     plt.show()
 
-def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vectorization, bar_plot=True, n_word_reps=20, use_orig_word_reps=False, logger=None):
+def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vectorization, bar_plot=True, n_word_reps=20, orig_word_reps=None, logger=None):
     model = FooClass()
     model.row_labels_, model.column_labels_ = row_col_labels
     model.centroids = row_col_centroids
     model.cluster_assoc = cluster_assoc
     model.__vectorization, model.__original_data = vectorization, original_data
-    if use_orig_word_reps:
-        word_reps = get_representatives(data.T, model, l, n_representatives=n_word_reps, method='naive_sum_tfidf', kind='words')
-    else:
-        word_reps = None
-    _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, word_reps=word_reps, logger=logger)
+
+    _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, word_reps=orig_word_reps, logger=logger)
     if bar_plot:
         cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=n_word_reps)
 
@@ -835,12 +839,15 @@ def main():
         new_new_abstracts, df_new_abs = load_new_new_abstracts("data/artigosNaoUtilizados.csv", 496+20, abstracts)
         Z, new_abs_classification, _ = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
         print_silhouette_score(Z, new_abs_classification, model.column_labels_)
-        new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+        #new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+        new_row_centroids, new_col_centroids = model.centroids[0], get_centroids_by_cluster(Z.T, model.column_labels_, model.n_col_clusters)
+
         new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, model.column_labels_), 
-            (new_row_centroids, model.centroids[1]), model.cluster_assoc, vec, use_orig_word_reps=KEEP_WORD_REPS, bar_plot=SHOW_IMAGES, logger=None)
+            (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, 
+            orig_word_reps=(model.__col_reps if KEEP_WORD_REPS else None), bar_plot=SHOW_IMAGES, logger=None)
         
         # distance metrics and vocabulary sizes
-        misc_statistics(model, new_row_centroids, model.centroids[1], vec, new_new_abstracts)
+        misc_statistics(model, new_row_centroids, new_col_centroids, vec, new_new_abstracts)
 
         # reduced-dimension scatter plot for new abstracts
         if SHOW_IMAGES:
