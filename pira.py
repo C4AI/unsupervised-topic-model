@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-#TODO: check if keeping row centroids makes more sense (i think keep column labels and row centroids)
-
 import numpy as np
 from numpy.linalg import inv, norm
 from numpy.random import default_rng
@@ -19,11 +17,13 @@ from sklearn.feature_extraction.text import *
 from sklearn.preprocessing import normalize
 import nltk
 
+from typing import Literal, Iterable # Python 3.8+
 from collections import Counter, OrderedDict # OrderedDict is redundant as of Python 3.7
 import sys,os,pickle,re
 from pyqtgraph.Qt import QtCore, QtGui
 #import pyqtgraph.opengl as gl
 import pyqtgraph as pg
+from itertools import combinations
 
 wbkm = __import__("wbkm numpy debugging land")
 from nbvd import NBVD_coclustering
@@ -40,7 +40,7 @@ stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre'
     'likely','later','would','together','even','part','using','mostly','several','values','important','although', # misc 3
     'study','studies','studied','research','paper','suggests','suggest','indicate','indicates','show','shows','result','results','present','presents','presented','consider','considered','considering','proposed','discussed','licensee','authors','aims', # research jargon 1
     'analysis','obtained','estimated','observed','data','model','sources','revealed','found','problem','used','article', # research jargon 2
-    #'os','nature','algorithm','poorly','strongly','rights','universidade', # TODO: double-check
+    #'os','nature','algorithm','poorly','strongly','rights','universidade','years', # TODO: double-check
     # TODO: regex for copyright
 ])
 # false positives: Cu, Ca,
@@ -59,14 +59,14 @@ vec_kwargs = Bunch(min_df=4, stop_words=stop_words_nltk, lowercase=False)
 W2V_DIM=100
 ALG='nbvd'
 WAIT_TIME = 4 # wait time between tasks
-LABELING_METHOD="centroids method" # TODO: implement changing to not fancy
-CLUSTER_AVG_IS_CENTROID=False
-KEEP_WORD_REPS=True # you have to for centroid method (were reusing the column centroid after all)
-
 rerun_embedding=True
+LABELING_METHOD="centroids method" # TODO: implement changing to not fancy
+CLUSTER_AVG_IS_CENTROID_FOR_CHOOSING_REPS=False
+KEEP_WORD_REPS=True # required for centroid method (were reusing the column centroid after all)
+
 LABEL_CHECK = True
-CENTROID_CHECK = True
-COCLUSTER_CHECK = True
+SHADE_CENTROIDS = True
+SHADE_COCLUSTERS = False
 NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
@@ -184,7 +184,6 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
             yield i
         if count >= n_representatives:
             return # stop yielding
-
 def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, method='centroid_dif', kind=None) -> dict:
     cluster_representatives = {}
 
@@ -202,7 +201,7 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
             centroids = model.centroids[0]
         elif kind == 'words':
             centroids = model.centroids[1]
-        centroids_ = get_centroids_by_cluster(data, labels, n_clusters) if CLUSTER_AVG_IS_CENTROID else centroids
+        centroids_ = get_centroids_by_cluster(data, labels, n_clusters) if CLUSTER_AVG_IS_CENTROID_FOR_CHOOSING_REPS else centroids
     else:
         centroids_ = get_centroids_by_cluster(data, labels, n_clusters)
     if hasattr(model, "R"):
@@ -210,7 +209,7 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
 
     if method == 'naive_sum_tfidf':
         reverse = not reverse # small distance ~ big sum
-        dists = np.sum(data, axis=1) # rows are docs unless data is transposed
+        dists = np.sum(data, axis=1) # rows are docs; if data is transposed, rows are words
         all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
     elif method == 'naive_norm_tfidf':
         squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
@@ -225,8 +224,13 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         all_distances = np.zeros((data.shape[0], n_clusters))
         # NOTE: words are not normalized (but documents are)
         n_data = normalize(data) if kind == 'words' else data
+        big_thing = np.max(n_data)
         for i, r in enumerate(n_data):
-            all_distances[i] = [norm(r-centroid_sum) for centroid_sum in centroids_.T]
+            if not (np.sum(r) == 0):
+                all_distances[i] = [norm(r-centroid_sum) for centroid_sum in centroids_.T]
+            else:
+                all_distances[i] = 2*big_thing
+
         """ # faster difference i think
         c_shape = centroids_.shape
         data_extra = data.reshape(*data.shape, 1).repeat(c_shape[1], axis=2) # add extra dim for clusters
@@ -307,23 +311,6 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                 if cluster_assoc[i,j]:
                     relevant_coclusters.append((i,j))
     
-    """# DBG
-    N_REPS_COMPARE=10
-    row_cluster_representatives1 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='naive_sum_tfidf', kind='docs')
-    col_cluster_representatives1 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='naive_sum_tfidf', kind='words')
-    row_cluster_representatives2 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='centroid_dif', kind='docs')
-    col_cluster_representatives2 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='centroid_dif', kind='words')
-    row_cluster_representatives3 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='matrix_assoc', kind='docs')
-    col_cluster_representatives3 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='matrix_assoc', kind='words')
-
-    print("docs:")
-    print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
-    print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives1.values(), row_cluster_representatives2.values())], sep="\n")
-    print("\nwords:")
-    print(*[f"{t[0]}\n{t[1]}" for t in zip(col_cluster_representatives.items(), col_cluster_representatives2.items())], sep="\n")
-    print("comum:", *[set(c1).intersection(set(c2)) for c1,c2 in zip(col_cluster_representatives1.values(), col_cluster_representatives2.values())], sep="\n")
-    """
-    
     # get row- and column-cluster representatives
     row_cluster_representatives = get_representatives(data, model, k, n_representatives=n_doc_reps, kind='docs')
     if word_reps is None: # calculate word representatives if they are not given
@@ -401,26 +388,44 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                         oc_other_str = "".join([f"({rclust}:{oc_other:.0f}%)" for rclust,oc_other in oc_others])
                         to_print.append(f"{word}(T:{oc_top:.0f}%)(B:{oc_bottom:.0f}%) {oc_other_str}")
                 print_or_log(", ".join(to_print)+"\n--------------------------------------------------------\n")
-    
+    #"""# DBG
+    N_REPS_COMPARE=10
+    row_cluster_representatives_all, col_cluster_representatives_all = [], []
+    row_cluster_representatives1 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='naive_sum_tfidf', kind='docs')
+    col_cluster_representatives1 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='naive_sum_tfidf', kind='words')
+    row_cluster_representatives_all.append(row_cluster_representatives1)
+    col_cluster_representatives_all.append(col_cluster_representatives1)
+    row_cluster_representatives2 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='centroid_dif', kind='docs')
+    col_cluster_representatives2 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='centroid_dif', kind='words')
+    row_cluster_representatives_all.append(row_cluster_representatives2)
+    col_cluster_representatives_all.append(col_cluster_representatives2)
+    if hasattr(model, "R"):
+        row_cluster_representatives3 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='matrix_assoc', kind='docs')
+        col_cluster_representatives3 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='matrix_assoc', kind='words')
+        row_cluster_representatives_all.append(row_cluster_representatives3)
+        col_cluster_representatives_all.append(col_cluster_representatives3)
+    """
+    print("docs:")
+    print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
+    print("comum:", *[set(r1).intersection(set(r2)) for r1,r2 in zip(row_cluster_representatives1.values(), row_cluster_representatives2.values())], sep="\n")
+    print("\nwords:")
+    print(*[f"{t[0]}\n{t[1]}" for t in zip(col_cluster_representatives.items(), col_cluster_representatives2.items())], sep="\n")
+    print("comum:", *[set(c1).intersection(set(c2)) for c1,c2 in zip(col_cluster_representatives1.values(), col_cluster_representatives2.values())], sep="\n")
+    """
+    # DBG
     # visually compare different representative selection methods
-    if SHOW_IMAGES and False:
-        def __reps_dict_to_reps_list_and_labels (reps_dict, data, n_clusters):
+    if SHOW_IMAGES:
+        def __reps_dict_to_reps_matrix_and_labels (reps_dict, data, n_clusters):
             n_dim = data.shape[1]
             reps_matrix, reps_labels = np.zeros((n_clusters*N_REPS_COMPARE, n_dim), dtype=np.float64), np.zeros((n_clusters*N_REPS_COMPARE,), dtype=np.int64)
             total_count = 0
+
             for label, reps in reps_dict.items():
                 n = len(reps)
                 reps_matrix[total_count : total_count+n, :] = data[reps, :]
                 reps_labels[total_count : total_count+n] = label
                 total_count += n
             return reps_matrix, reps_labels
-        r_clust_avg, c_clust_avg = get_centroids_by_cluster(data, row_labels_, k), get_centroids_by_cluster(data.T, column_labels_, l)
-        # rows
-        reps_list1, reps_labels1 = __reps_dict_to_reps_list_and_labels(row_cluster_representatives1, data, k)
-        reps_list2, reps_labels2 = __reps_dict_to_reps_list_and_labels(row_cluster_representatives2, data, k)
-        reps_list3, reps_labels3 = __reps_dict_to_reps_list_and_labels(row_cluster_representatives3, data, k)
-        pca, pal = model.row_pca, model.row_c_palette
-
         def __cluster_means (thing, labels):
             n_labels = 1+max(labels)
             n_dim = thing.shape[1]
@@ -428,64 +433,62 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
             for i in range(n_labels):
                 means[i,:] = np.mean(thing[labels == i], axis=0)
             return means
-        # calculate a metric
-        means1 = __cluster_means(reps_list1, reps_labels1)
-        means2 = __cluster_means(reps_list2, reps_labels2)
-        means3 = __cluster_means(reps_list3, reps_labels3)
-        print("norms:")
-        print("12:", norm(means1-means2,axis=1))
-        print("23:", norm(means2-means3,axis=1))
-        print("13:", norm(means1-means3,axis=1))
 
-        # apply dimensionality reduction (docs are already normalized)
-        reps_list1_rdx, reps_list2_rdx, reps_list3_rdx = pca.transform(reps_list1), pca.transform(reps_list2), pca.transform(reps_list3),
         
-        csize, size2, size3 = 50, 190, 550
-        # plot representatives for different methods
-        _, _, ax = centroid_scatter_plot(reps_list1, r_clust_avg, reps_labels1, pca=pca, palette=pal, centroid_size=csize, title="Row representative comparison")
-        for i, point in enumerate(reps_list2_rdx):
-            ax.scatter(*point, color=pal[reps_labels2[i]], marker="*", s=size2, alpha=0.7)
-        for i, point in enumerate(reps_list3_rdx):
-            ax.scatter(*point, color=pal[reps_labels3[i]], marker="+", s=size3, alpha=0.58) 
+        def __plot_comparison (rc_cluster_representatives_all, data, model, kind: Literal['rows','cols'], rep_choosing_methods_labels: Iterable[str]):
+            if kind == "rows":
+                pca, pal = model.row_pca, model.row_c_palette
+                n_labels = model.centroids[0].shape[1]
+                centroids = model.centroids[0]
+                title = "Row representative comparison"
+            elif kind == "cols":
+                pca, pal = model.col_pca, model.col_c_palette
+                n_labels = model.centroids[1].shape[1]
+                centroids = model.centroids[1]
+                title = "Column representative comparison"
+            
+            # get representatives matrix and labels for all methods
+            reps_matrix_and_labels_all = []
+            for reps_dict in rc_cluster_representatives_all:
+                reps_matrix, reps_labels = __reps_dict_to_reps_matrix_and_labels(reps_dict, data, n_labels)
+                if kind == "cols": # docs are already normalized
+                    reps_matrix = normalize(reps_matrix, axis=1)
+                cmeans = __cluster_means(reps_matrix, reps_labels)
+                reps_matrix_rdx = pca.transform(reps_matrix) # apply dimensionality reduction
+                reps_matrix_and_labels_all.append((reps_matrix, reps_labels, cmeans, reps_matrix_rdx))
+            # calculate a (dis)similarity metric
+            print(kind)
+            print("norms:")
+            for i,j in combinations(range(len(reps_matrix_and_labels_all)), 2):
+                cmeansi = reps_matrix_and_labels_all[i][2]
+                cmeansj = reps_matrix_and_labels_all[j][2]
+                print(f"d {i+1},{j+1}: {norm(cmeansi-cmeansj, axis=1)}")
+            
+            ## reduced centroid plot ##
+            shape_size_alpha_list = [("*",170,0.35), ("+",550,0.55)] # shapes and sizes for methods beyond 2
+            # plot first representatives
+            reps_matrix1, reps_labels1, _, _ = reps_matrix_and_labels_all[0]
+            _, _, ax = centroid_scatter_plot(reps_matrix1, centroids, reps_labels1, pca=pca, palette=pal, centroid_size=50, title=title)
 
-        handles = [mlines.Line2D([], [], color='black', marker='s', linestyle='None', markersize=16),
-                    mlines.Line2D([], [], color='black', marker='o', linestyle='None', markersize=16),
-                    mlines.Line2D([], [], color='black', marker='*', linestyle='None', markersize=20),
-                    mlines.Line2D([], [], color='black', marker='+', linestyle='None', markersize=20)]
-        labels = ['Cluster\naverages', '1:TF-IDF\nsum', '2:Centroid\ndifference', '3:R and C\nmatrices']
-        ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
+            # plot remaining representatives
+            n_method = 1
+            for _, reps_labels, _, reps_matrix_rdx in reps_matrix_and_labels_all[1:]:
+                shape, size, alpha = shape_size_alpha_list[n_method-1]
+                for i, point in enumerate(reps_matrix_rdx):
+                    ax.scatter(*point, color=pal[reps_labels[i]], marker=shape, s=size, alpha=alpha)
+                n_method += 1
 
-        # columns
-        reps_list1, reps_labels1 = __reps_dict_to_reps_list_and_labels(col_cluster_representatives1, data.T, l)
-        reps_list2, reps_labels2 = __reps_dict_to_reps_list_and_labels(col_cluster_representatives2, data.T, l)
-        reps_list3, reps_labels3 = __reps_dict_to_reps_list_and_labels(col_cluster_representatives3, data.T, l)
-        pca, pal = model.col_pca, model.col_c_palette
+            handles = [mlines.Line2D([], [], color='black', marker='s', linestyle='None', markersize=16),
+                        mlines.Line2D([], [], color='black', marker='o', linestyle='None', markersize=16),
+                        mlines.Line2D([], [], color='black', marker='*', linestyle='None', markersize=20),
+                        mlines.Line2D([], [], color='black', marker='+', linestyle='None', markersize=20)]
+            labels = rep_choosing_methods_labels
+            ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
 
-        # calculate a metric
-        means1 = __cluster_means(reps_list1, reps_labels1)
-        means2 = __cluster_means(reps_list2, reps_labels2)
-        means3 = __cluster_means(reps_list3, reps_labels3)
-        print("norms:")
-        print("12:", norm(means1-means2,axis=1))
-        print("23:", norm(means2-means3,axis=1))
-        print("13:", norm(means1-means3,axis=1))
-
-        # apply dimensionality reduction (docs are already normalized)
-        reps_list1_rdx, reps_list2_rdx, reps_list3_rdx = pca.transform(reps_list1), pca.transform(reps_list2), pca.transform(reps_list3),
-
-        # plot representatives for different methods
-        _, _, ax = centroid_scatter_plot(reps_list1, c_clust_avg, reps_labels1, pca=pca, palette=pal, centroid_size=csize, title="Column representative comparison")
-        for i, point in enumerate(reps_list2_rdx):
-            ax.scatter(*point, color=pal[reps_labels2[i]], marker="*", s=size2, alpha=0.7)
-        for i, point in enumerate(reps_list3_rdx):
-            ax.scatter(*point, color=pal[reps_labels3[i]], marker="+", s=size3, alpha=0.58) 
-
-        handles = [mlines.Line2D([], [], color='black', marker='s', linestyle='None', markersize=16),
-                    mlines.Line2D([], [], color='black', marker='o', linestyle='None', markersize=16),
-                    mlines.Line2D([], [], color='black', marker='*', linestyle='None', markersize=20),
-                    mlines.Line2D([], [], color='black', marker='+', linestyle='None', markersize=20)]
-        labels = ['Cluster\naverages', '1:TF-IDF\nsum', '2:Centroid\ndifference', '3:R and C\nmatrices']
-        ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
+        print("Dissimilarity between cluster averages for different representative choosing methods:\n")
+        rep_choosing_methods_labels = ['Cluster\naverages', '1:TF-IDF\nsum', '2:Centroid\ndifference', '3:R and C\nmatrices'][:1+len(row_cluster_representatives_all)]
+        __plot_comparison(row_cluster_representatives_all, data, model, kind='rows', rep_choosing_methods_labels=rep_choosing_methods_labels)
+        __plot_comparison(col_cluster_representatives_all, data.T, model, kind='cols', rep_choosing_methods_labels=rep_choosing_methods_labels)
         plt.show() 
 
     return (row_cluster_representatives, col_cluster_representatives), w_occurrence_per_d_cluster
@@ -662,9 +665,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         model.fit(data)
 
     # add extra info to model
-    model.__original_data = original_data
-    model.__vectorization = vectorization
-    
+    model.__original_data, model.__vectorization = original_data, vectorization
+
     """ # clumps most docs into 1 cluster
     elif alg == 'kmeans':
         model = FooClass()
@@ -700,12 +702,12 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         if LABEL_CHECK:
             shaded_label_matrix(data, model.row_labels_, kind="rows", method_name=LABELING_METHOD, RNG=RNG, opacity=1, aspect_ratio=ASPECT_RATIO)
             shaded_label_matrix(data, model.column_labels_, kind="columns", method_name=LABELING_METHOD, RNG=RNG, opacity=1, aspect_ratio=ASPECT_RATIO)
-            if COCLUSTER_CHECK and alg == "nbvd":
+            if SHADE_COCLUSTERS and alg == "nbvd":
                 shade_coclusters(data, (model.row_labels_, model.column_labels_), 
                     model.cluster_assoc, RNG=RNG, aspect_ratio=ASPECT_RATIO)
              
         # centroid (and dataset) (normalized) scatter plot
-        if CENTROID_CHECK and alg == 'nbvd':
+        if SHADE_CENTROIDS and alg == 'nbvd':
             row_centroids, col_centroids = model.centroids[0], model.centroids[1]
             model.row_pca, model.row_c_palette, _ = centroid_scatter_plot(data, row_centroids, model.row_labels_, title="Rows and Row centroids", RNG=RNG)
             model.col_pca, model.col_c_palette, _ = centroid_scatter_plot(data.T, col_centroids, model.column_labels_, title="Columns and Column centroids", RNG=RNG)
@@ -768,54 +770,64 @@ def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=
     col_classification = model.column_labels_
     return (Z, row_classification, col_classification)
 
-def new_abs_reduced_centroids_plot (model, Z, new_abs_classification, new_centroids, RNG=None):
+def new_abs_reduced_centroids_plot (Z, new_labels, orig_model, RNG=None):
     RNG = RNG or np.default_rng()
-    # calculate reduced centroids
-    row_centroids = model.centroids[0]
-    print(f"DBG: Z:{Z.shape} labels: {new_abs_classification.shape} centroids: {row_centroids.shape}")
-    _, _, ax = centroid_scatter_plot(Z, row_centroids, new_abs_classification, title="New samples and Row centroids", pca=model.row_pca, palette=model.row_c_palette, RNG=RNG)
-    new_points = normalize(new_centroids.T, axis=1)
-    reduced_new_points = model.row_pca.transform(new_points)
+    # plot new samples and old cluster averages
+    old_row_centroids = get_centroids_by_cluster(orig_model.data, orig_model.row_labels_, n_clusters=orig_model.centroids[0].shape[1])
+    _, _, ax = centroid_scatter_plot(Z, old_row_centroids, new_labels, title="New samples and Row centroids", pca=orig_model.row_pca, palette=orig_model.row_c_palette, RNG=RNG)
 
-    # plot reduced points
+    # plot new cluster averages
+    new_centroids = get_centroids_by_cluster(Z, new_labels, n_clusters=orig_model.centroids[0].shape[1])
+    new_points = normalize(new_centroids.T, axis=1)
+    reduced_new_points = orig_model.row_pca.transform(new_points)
     for i, r_centroid in enumerate(reduced_new_points):
-        ax.scatter(*r_centroid, color=model.row_c_palette[i], marker="*", s=700, alpha=0.8)            
-    # legends for centroid clarity
-    handles = [mlines.Line2D([], [], color='black', marker='s', linestyle='None', markersize=20),
+        ax.scatter(*r_centroid, color=orig_model.row_c_palette[i], marker="*", s=700, alpha=0.8)            
+    
+    # plot matrix centroids
+    m_centroids = orig_model.centroids[0]
+    new_points = normalize(m_centroids.T, axis=1)
+    reduced_new_points = orig_model.row_pca.transform(new_points)
+    for i, r_centroid in enumerate(reduced_new_points):
+        ax.scatter(*r_centroid, color=orig_model.row_c_palette[i], marker="o", s=700, alpha=0.8)
+    
+    # legend for the centroids
+    handles = [mlines.Line2D([], [], color='black', marker='o', linestyle='None', markersize=20),
+                mlines.Line2D([], [], color='black', marker='s', linestyle='None', markersize=20),
                 mlines.Line2D([], [], color='black', marker='*', linestyle='None', markersize=20)]
-    labels = ['Original\ncentroids', 'New data\ncentroids']
+    labels = ['Original\nmatrix\ncentroids', 'Original\ncluster\naverages', 'New data\ncluster\naverages']
     ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
     plt.show()
 
-def new_abs_cluster_summary_bar_plot (data, original_data, row_col_labels, row_col_centroids, cluster_assoc, vectorization, bar_plot=True, n_word_reps=20, orig_word_reps=None, logger=None):
+def new_abs_cluster_summary_bar_plot (data, new_abstracts, row_col_labels, row_col_centroids, orig_model, bar_plot=True, n_word_reps=20, orig_word_reps=None, logger=None):
     model = FooClass()
+    model.__original_data = new_abstracts
     model.row_labels_, model.column_labels_ = row_col_labels
     model.centroids = row_col_centroids
-    model.cluster_assoc = cluster_assoc
-    model.__vectorization, model.__original_data = vectorization, original_data
+    model.__vectorization, model.cluster_assoc =  orig_model.__vectorization, orig_model.cluster_assoc # reuse vectorization and cluster assoc
+    if hasattr(orig_model,"row_pca"):
+        model.row_pca, model.col_pca, model.row_c_palette, model.col_c_palette = orig_model.row_pca, PCA(n_components=2, random_state=42).fit(normalize(np.vstack([data.T, row_col_centroids[1].T]))), orig_model.row_c_palette, orig_model.col_c_palette
 
     _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, word_reps=orig_word_reps, logger=logger)
     if bar_plot:
         cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=n_word_reps)
 
 
-def misc_statistics (model, new_row_centroids, new_col_centroids, vec, new_new_abstracts):
-    row_dist = norm(model.centroids[0] - new_row_centroids, axis=0) # frobenius norm
-    print(f"Centroid difference for original and new abstracts:\n{row_dist}")
-    orig_r_clust_avg = get_centroids_by_cluster(model.data, model.row_labels_, model.n_row_clusters)
-    orig_c_clust_avg = get_centroids_by_cluster(model.data.T, model.column_labels_, model.n_col_clusters)
-    row_dist = norm(orig_r_clust_avg - new_row_centroids, axis=0) # frobenius norm
-    print(f"Centroid difference for original cluster avg and new abstracts:\n{row_dist}")
-    print(f"norm for original centroids (r,c): {norm(model.centroids[0])}, {norm(model.centroids[1])}")
-    print(f"mean for original centroids (r,c): {np.mean(model.centroids[0])}, {np.mean(model.centroids[1])}")
+def misc_statistics (orig_model, new_new_abstracts, new_data, row_col_labels): #DBG
+    print(f"\nnorm for original centroids (r,c): {norm(orig_model.centroids[0])}, {norm(orig_model.centroids[1])}")
+    print(f"mean for original centroids (r,c): {np.mean(orig_model.centroids[0])}, {np.mean(orig_model.centroids[1])}")
 
-    # DBG
-    s1 = set(vec.vocabulary_.keys())
+    orig_r_clust_avg = get_centroids_by_cluster(orig_model.data, orig_model.row_labels_, orig_model.n_row_clusters)
+    new_r_clust_avg = get_centroids_by_cluster(new_data, row_col_labels[0], orig_model.n_row_clusters)
+    row_dist = norm(orig_r_clust_avg - new_r_clust_avg, axis=0)
+    print(f"Difference between original and new cluster averages:\n\t{row_dist}")
+
+    s1 = set(orig_model.__vectorization.vocabulary_.keys())
     new_vec = TfidfVectorizer(**vec_kwargs)
     new_vec.fit(new_new_abstracts)
     s2 = set(new_vec.vocabulary_.keys())
     print("\n\nvocab1:", len(s1),"vocab2:", len(s2))
-    print("diferenca vocab (2 nao em 1):",len(s2.difference(s1)))
+    print("vocab difference (2 not in 1):",len(s2.difference(s1)))
+    print("tfidf words missing in all new abstracts:", np.sum(np.sum(new_data,axis=0)==0) )
 
 def main():
     global RNG_SEED
@@ -837,21 +849,23 @@ def main():
     if NEW_ABS:
         print("@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#","\t\tNEW ABSTRACTS\t\t","@@##@##@#@#@##@#@#@### #@# @##@ #@ ## @#@# #@ # @##@# @# @#@##@#@#@#@#", sep="\n")
         new_new_abstracts, df_new_abs = load_new_new_abstracts("data/artigosNaoUtilizados.csv", 496+20, abstracts)
+        # get abstract labels (and reuse the word labels)
         Z, new_abs_classification, _ = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
         print_silhouette_score(Z, new_abs_classification, model.column_labels_)
-        #new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+        # calculate new column centroids since we have a new word space (due to having different abstracts)
         new_row_centroids, new_col_centroids = model.centroids[0], get_centroids_by_cluster(Z.T, model.column_labels_, model.n_col_clusters)
-
+        print("new col centroid sum", np.sum(new_col_centroids, axis=0))
+        # print document and word representatives; do a bar plot summarizing this information
         new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, model.column_labels_), 
-            (new_row_centroids, new_col_centroids), model.cluster_assoc, vec, 
+            (new_row_centroids, new_col_centroids), model, 
             orig_word_reps=(model.__col_reps if KEEP_WORD_REPS else None), bar_plot=SHOW_IMAGES, logger=None)
         
-        # distance metrics and vocabulary sizes
-        misc_statistics(model, new_row_centroids, new_col_centroids, vec, new_new_abstracts)
+        # distance metrics and info about missing vocabulary, empty words
+        misc_statistics(model, new_new_abstracts, Z, (new_abs_classification, model.column_labels_))
 
         # reduced-dimension scatter plot for new abstracts
         if SHOW_IMAGES:
-            new_abs_reduced_centroids_plot(model, Z, new_abs_classification, new_row_centroids, RNG=RNG)
+            new_abs_reduced_centroids_plot(Z, new_abs_classification, model, RNG=RNG)
 
 if __name__ == "__main__":
     main()

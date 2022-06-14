@@ -364,14 +364,17 @@ def centroid_scatter_plot (samples, centroids, labels, title, pca=None, palette=
     fig = plt.figure()
     ax = fig.add_subplot(1, 21, (1,18)) # make a subplot that spans the left-side (n-1)/n of the figure.
     
-    # plot centroids in a way that allows us to label them
-    things = []
+    # plot centroids
     for i in range(n):
         # NOTE: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
-        thing = ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=centroid_size, alpha=0.8)
-        things.append(thing)
+        ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=centroid_size, alpha=0.8)
     ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
-    legend = ax.legend(things, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
+    
+    # create legend
+    handles = []
+    for i in range(n):
+        handles.append(mpatches.Patch(color=palette[i], label=i))
+    legend = ax.legend(handles, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
     plt.gca().add_artist(legend) # manually add legend so we can add new legends later
     plt.title(title)
     return (pca, palette, ax)
