@@ -16,13 +16,10 @@ from sklearn.datasets import make_blobs
 from sklearn.feature_extraction.text import *
 from sklearn.preprocessing import normalize
 import nltk
-
+import colored
 from typing import Literal, Iterable # Python 3.8+
 from collections import Counter, OrderedDict # OrderedDict is redundant as of Python 3.7
 import sys,os,pickle,re
-from pyqtgraph.Qt import QtCore, QtGui
-#import pyqtgraph.opengl as gl
-import pyqtgraph as pg
 from itertools import combinations
 
 wbkm = __import__("wbkm numpy debugging land")
@@ -40,7 +37,7 @@ stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre'
     'likely','later','would','together','even','part','using','mostly','several','values','important','although', # misc 3
     'study','studies','studied','research','paper','suggests','suggest','indicate','indicates','show','shows','result','results','present','presents','presented','consider','considered','considering','proposed','discussed','licensee','authors','aims', # research jargon 1
     'analysis','obtained','estimated','observed','data','model','sources','revealed','found','problem','used','article', # research jargon 2
-    #'os','nature','algorithm','poorly','strongly','rights','universidade','years', # TODO: double-check
+    #'os','nature','algorithm','poorly','strongly','rights','universidade','years','yr','showed', # TODO: double-check
     # TODO: regex for copyright
 ])
 # false positives: Cu, Ca,
@@ -70,7 +67,7 @@ SHADE_COCLUSTERS = False
 NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=True
+SHOW_IMAGES=False
 NEW_ABS=True
 
 ############################################################################## 
@@ -141,7 +138,7 @@ def dict_from_pretrained_model(path_to_embedding_file, relevant_words):
 class FooClass:
     pass
 exp_numbers = re.compile("[^A-Za-z]\d+\.\d+|[^A-Za-z]\d+\,\d+|[^A-Za-z]\d+")
-exp_non_alpha = re.compile("[^A-Za-zÀàÁáÂâÃãÉéÊêÍíÓóÔôÕõÚúÇç02-9 \_–+]+")
+exp_non_alpha = re.compile("[^A-Za-zÀàÁáÂâÃãÉéÊêÍíÓóÔôÕõÚúÇç02-9 \._–+]+")
 exp_whitespace = re.compile("\s+")
 exp_hyphen = re.compile("(?<=[a-z])\-(?=[a-z])")
 
@@ -221,6 +218,7 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
     elif method == 'centroid_dif': # DBG
+        # TODO: test if faster difference is faster
         all_distances = np.zeros((data.shape[0], n_clusters))
         # NOTE: words are not normalized (but documents are)
         n_data = normalize(data) if kind == 'words' else data
@@ -811,6 +809,63 @@ def new_abs_cluster_summary_bar_plot (data, new_abstracts, row_col_labels, row_c
     if bar_plot:
         cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=n_word_reps)
 
+def highlight_passages (new_abstracts, new_abs_classification, row_centroids, orig_vec):
+    # TODO: account for non-selected clusters
+    m, k = row_centroids.shape
+    rex = re.compile("\.\s+")
+    pink_text = colored.fg("deep_pink_3b")
+    segmented_abstracts = []
+    abs_sizes = []
+    assert len(new_abstracts) == len(new_abs_classification), "OH NO"
+
+    # segment the abstracts
+    for ab in new_abstracts:
+        segm_abs = re.split(rex, ab)
+        segmented_abstracts.extend(segm_abs)
+        abs_sizes.append(len(segm_abs))
+    print("len segm", len(segmented_abstracts), "sum", sum(abs_sizes))
+    print("zero size abs", np.sum(np.array(abs_sizes) == 0))
+
+    # vectorize each segment
+    segm_matrix = orig_vec.transform(segmented_abstracts)
+    print("zero segms", np.sum(np.sum(segm_matrix,axis=1) == 0))
+
+    # calculate distances to centroids and select segments with distance smaller than threshold
+    segm_count = 0
+    all_distances = np.zeros((segm_matrix.shape[0], k), dtype=np.float64)
+    big_thing = m
+    N_select = 2
+    for i, ab in enumerate(new_abstracts):
+        label = new_abs_classification[i]
+        abs_matrix = segm_matrix[segm_count:segm_count+abs_sizes[i]]
+
+        for j,r in enumerate(abs_matrix):
+            if not (np.sum(r) == 0):
+                all_distances[segm_count+j] = [norm(r-centroid) for centroid in row_centroids.T]
+            else:
+                all_distances[segm_count+j] = big_thing
+        abs_distances = all_distances[segm_count:segm_count+abs_sizes[i], :]
+        if i == 0:
+            print("abs dists:\n", abs_distances,sep="")
+        """
+        threshold = np.mean(abs_distances[:, label])
+        selected = abs_distances[:, label] <= threshold
+        """
+        selected = [segm_idx for dist,segm_idx in sorted(zip(abs_distances[:, label],range(abs_distances.shape[0])))[:N_select]]
+
+        # print info
+        if i < 10:
+            print(f"ABSTRACT {i} ( in cluster {label}):\n")
+            if i == 0:
+                print("selected0", selected)
+            for n_seg, segm in enumerate(segmented_abstracts[segm_count:segm_count+abs_sizes[i]]):
+                if n_seg not in selected:
+                    print(segm)
+                else:
+                    print(colored.stylize(segm, pink_text))
+            print("\n######## ############ ################ ########\n")
+        segm_count += abs_sizes[i]
+
 
 def misc_statistics (orig_model, new_new_abstracts, new_data, row_col_labels): #DBG
     print(f"\nnorm for original centroids (r,c): {norm(orig_model.centroids[0])}, {norm(orig_model.centroids[1])}")
@@ -859,7 +914,9 @@ def main():
         new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, model.column_labels_), 
             (new_row_centroids, new_col_centroids), model, 
             orig_word_reps=(model.__col_reps if KEEP_WORD_REPS else None), bar_plot=SHOW_IMAGES, logger=None)
-        
+        # highlight important passages
+        highlight_passages(new_new_abstracts, new_abs_classification, new_row_centroids, vec)
+
         # distance metrics and info about missing vocabulary, empty words
         misc_statistics(model, new_new_abstracts, Z, (new_abs_classification, model.column_labels_))
 
