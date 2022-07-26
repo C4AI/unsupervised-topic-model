@@ -67,7 +67,7 @@ SHADE_COCLUSTERS = False
 NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=False
+SHOW_IMAGES=True
 NEW_ABS=True
 
 ############################################################################## 
@@ -821,6 +821,10 @@ def highlight_passages (new_abstracts, new_abs_classification, row_centroids, or
     # segment the abstracts
     for ab in new_abstracts:
         segm_abs = re.split(rex, ab)
+        for a,seg in enumerate(segm_abs[:]): # dirty fix
+            if a == len(segm_abs)-1 and ("copyright" in seg or "ltd" in seg or "licence" in seg or "license" in seg or "authors" in seg or "society" in seg):
+                segm_abs.remove(seg)
+
         segmented_abstracts.extend(segm_abs)
         abs_sizes.append(len(segm_abs))
     print("len segm", len(segmented_abstracts), "sum", sum(abs_sizes))
@@ -834,9 +838,9 @@ def highlight_passages (new_abstracts, new_abs_classification, row_centroids, or
     segm_count = 0
     all_distances = np.zeros((segm_matrix.shape[0], k), dtype=np.float64)
     big_thing = m
-    N_select = 2
     for i, ab in enumerate(new_abstracts):
         label = new_abs_classification[i]
+        N_select = math.ceil(0.2*abs_sizes[i])
         abs_matrix = segm_matrix[segm_count:segm_count+abs_sizes[i]]
 
         for j,r in enumerate(abs_matrix):
@@ -845,14 +849,20 @@ def highlight_passages (new_abstracts, new_abs_classification, row_centroids, or
             else:
                 all_distances[segm_count+j] = big_thing
         abs_distances = all_distances[segm_count:segm_count+abs_sizes[i], :]
-        if i == 0:
-            print("abs dists:\n", abs_distances,sep="")
-        """
-        threshold = np.mean(abs_distances[:, label])
-        selected = abs_distances[:, label] <= threshold
-        """
-        selected = [segm_idx for dist,segm_idx in sorted(zip(abs_distances[:, label],range(abs_distances.shape[0])))[:N_select]]
 
+
+        selected = [segm_idx for dist,segm_idx in sorted(zip(abs_distances[:, label],range(abs_distances.shape[0])))[:N_select]]
+        """
+        cluster_column = abs_distances[:, label]
+        threshold = np.mean(cluster_column[cluster_column != big_thing])
+        selected = np.argwhere(abs_distances[:, label] <= threshold) # indices of selected segments
+        if i<2:
+            print("threshold", threshold)
+        """
+
+        if i < 2:
+            print("abs dists:\n", abs_distances,sep="")
+        
         # print info
         if i < 10:
             print(f"ABSTRACT {i} ( in cluster {label}):\n")
@@ -860,9 +870,9 @@ def highlight_passages (new_abstracts, new_abs_classification, row_centroids, or
                 print("selected0", selected)
             for n_seg, segm in enumerate(segmented_abstracts[segm_count:segm_count+abs_sizes[i]]):
                 if n_seg not in selected:
-                    print(segm)
+                    print(f"\t{segm}")
                 else:
-                    print(colored.stylize(segm, pink_text))
+                    print(f"\t{colored.stylize(segm, pink_text)}")
             print("\n######## ############ ################ ########\n")
         segm_count += abs_sizes[i]
 
