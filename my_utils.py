@@ -344,14 +344,20 @@ def get_centroids_by_cluster (data, labels, n_clusters):
         centroids[:, k] = np.mean(data[mask, :], axis=0)
     return centroids
 
-def centroid_scatter_plot (samples, centroids, labels, title, pca=None, palette=None, centroid_size=400, RNG=None):
-    """Dimension-reduced plot of samples and centroids, coloring points according to labels.
+# TODO: fazer basis_vectors
+# 2 pontos definem uma reta
+# para cada cluster: normalizar um o outro nao, aplicar pca, descobrir direcao da reta, reta a partir da origem
+
+def centroid_scatter_plot (samples, centroids, labels, title, basis_vectors=None, pca=None, palette=None, centroid_size=400, RNG=None):
+    """
+    Dimension-reduced plot of samples and centroids, coloring points according to labels.
     """
     RNG = RNG or np.random.default_rng()
     # seed = RNG.integers(0, 2147483647) #DBG: better colors not doing an additional call to RNG
 
     _, n = centroids.shape
     points = normalize(np.vstack([samples, centroids.T]), axis=1) # normalize before PCA
+    #points = np.vstack([samples, centroids.T]) # normalize before PCA # ?DEL
     if not pca:
         pca = PCA(n_components=2, random_state=42)
         pca.fit(points)
@@ -388,6 +394,7 @@ def plot_norm_history (model):
 
     acc = np.array(acc)
     # TODO: test if ok
+    # TODO: i think it was a bit weird?
     #args = np.arange(len(acc))[acc > acc.mean()]
     #fig.vlines(args, ymin=min(y)-2*abs(min(y)), ymax=max(y)+abs(max(y)), color="black", alpha=0.2)
     #print(args)

@@ -15,6 +15,7 @@ from sklearn.metrics import silhouette_score, consensus_score, accuracy_score, a
 from sklearn.datasets import make_blobs
 from sklearn.feature_extraction.text import *
 from sklearn.preprocessing import normalize
+from sklearn.metrics.pairwise import euclidean_distances
 import nltk
 import colored
 from typing import Literal, Iterable # Python 3.8+
@@ -57,23 +58,42 @@ W2V_DIM=100
 ALG='nbvd'
 WAIT_TIME = 4 # wait time between tasks
 rerun_embedding=True
-LABELING_METHOD="centroids method" # TODO: implement changing to not fancy
-CLUSTER_AVG_IS_CENTROID_FOR_CHOOSING_REPS=False
+LABELING_METHOD="centroids method" # /DEL this is just to create a label
+CLUSTER_AVG_IS_CENTROID_FOR_CHOOSING_REPS=False # TODO: decide which is better
 KEEP_WORD_REPS=True # required for centroid method (were reusing the column centroid after all)
 
 LABEL_CHECK = True
 SHADE_CENTROIDS = True
-SHADE_COCLUSTERS = False
+SHADE_COCLUSTERS = True
 NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 SHOW_IMAGES=True
-NEW_ABS=True
+NEW_ABS=False
+LOG_BASE_FOLDER = "classification_info"
 
 ############################################################################## 
 # to use a set number of cpus: 
 #   taskset --cpu-list 0-7 python "pira.py"
 ##############################################################################
+
+# /DEL
+def get_article_ids (abstracts, df):
+    df = df.reset_index() # make sure indexes are correct
+    ids_abs = OrderedDict([(ab,(-1,"")) for ab in abstracts])
+    ids_found = 0
+    abstracts_s = set(abstracts)
+    if len(abstracts_s) != len(abstracts):
+        raise Exception("list of abstracts contains duplicates")
+
+    for i, row in df.iterrows():
+        processed_ab = Preprocessor().preprocess(row['abstract'])
+        if processed_ab in abstracts_s:
+            ids_abs[processed_ab] = (row['idarticle'], row['abstract'])
+            ids_found += 1
+        if ids_found == len(ids_abs):
+            break
+    return ids_abs.values()
 
 def w2v_combine_sentences (tokenized_sentences, model, method='tfidf', isDoc2Vec=False):
     out = []
@@ -293,7 +313,10 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
     n, l = col_centroids.shape
     smallest_rcluster_size = min(np.bincount(row_labels_))
     if smallest_rcluster_size == 0:
-        warnings.warn("A document cluster has size 0..", RuntimeWarning, stacklevel=2)
+        if logger:
+            logger.warn("A document cluster has size 0..")
+        else:
+            print("[WARNING] A document cluster has size 0..")
 
     if has_cocluster_info:
         cluster_assoc = model.cluster_assoc
@@ -354,7 +377,9 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
             
             # for each cocluster
             w_occurrence_per_d_cluster = OrderedDict() # store occurrence and dc info for each word
+            avg_liquid_frequencies = np.zeros((4,)) # DBG
             for dc, wc in relevant_coclusters:
+                
                 print_or_log("cocluster:", (dc, wc),"\n")
                 to_print = []
                 reps = col_cluster_representatives[wc] # get the representatives for the word cluster
@@ -362,13 +387,18 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                 # for each word, calculate its occurrence in each document cluster
                 for w in reps:
                     if dc not in row_reps_topN:
-                        warnigs.warn(f"## @#@ #@ {dc} not in row_reps!!!\n", UserWarning, stacklevel=2)
+                        if logger:
+                            logger.warn(f"## @#@ #@ {dc} not in row_reps!!!\n")
+                        else:
+                            print("f [WARNING] ## @#@ #@ {dc} not in row_reps!!!\n")
                         continue
                     else:
                         # occurrence for the dc in the cocluster
                         word = idx_to_word[w]
                         oc_top = 100/N * calculate_occurrence(word, original_data, row_reps_topN[dc])
                         oc_bottom = 100/N * calculate_occurrence(word, original_data, row_reps_bottomN[dc])
+                        
+                        avg_liquid_frequencies[dc] += oc_top # DBG
                         
                         w_occurrence_per_d_cluster[word] = OrderedDict()
                         w_occurrence_per_d_cluster[word][dc] = Bunch(occ=(oc_top, oc_bottom), assigned_dc=dc, assigned_wc=wc)
@@ -379,6 +409,7 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                             if rclust == dc:
                                 continue
                             oc_other = 100/N * calculate_occurrence(word, original_data, row_reps_topN[rclust])
+                            avg_liquid_frequencies[rclust] -= oc_other # DBG
                             oc_others.append((rclust, oc_other))
                             w_occurrence_per_d_cluster[word][rclust] = Bunch(occ=(oc_other, ), assigned_dc=dc, assigned_wc=wc)
 
@@ -386,6 +417,7 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                         oc_other_str = "".join([f"({rclust}:{oc_other:.0f}%)" for rclust,oc_other in oc_others])
                         to_print.append(f"{word}(T:{oc_top:.0f}%)(B:{oc_bottom:.0f}%) {oc_other_str}")
                 print_or_log(", ".join(to_print)+"\n--------------------------------------------------------\n")
+            print("\navg liquid frequencies\n",avg_liquid_frequencies/80)
     #"""# DBG
     N_REPS_COMPARE=10
     row_cluster_representatives_all, col_cluster_representatives_all = [], []
@@ -529,7 +561,7 @@ def do_vectorization (new_abstracts, vectorization_type, **kwargs):
     if vectorization_type == 'tfidf':
         vec = TfidfVectorizer(**kwargs)
         data = vec.fit_transform(new_abstracts).toarray()
-    elif vectorization == 'count':
+    elif vectorization_type == 'count':
         vec = CountVectorizer(**kwargs)
         data = vec.fit_transform(new_abstracts).toarray()
     elif vectorization_type == 'tfidf-char':
@@ -665,7 +697,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     # add extra info to model
     model.__original_data, model.__vectorization = original_data, vectorization
 
-    """ # clumps most docs into 1 cluster
+    #/DEL
+    """ # clumps most docs into 1 cluster #/DEL
     elif alg == 'kmeans':
         model = FooClass()
         model.data, model.n_row_clusters, model.n_col_clusters = data, N_ROW_CLUSTERS, N_COL_CLUSTERS
@@ -703,7 +736,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
             if SHADE_COCLUSTERS and alg == "nbvd":
                 shade_coclusters(data, (model.row_labels_, model.column_labels_), 
                     model.cluster_assoc, RNG=RNG, aspect_ratio=ASPECT_RATIO)
-             
+        
+        # TODO: plot normalized basis vectors as well
         # centroid (and dataset) (normalized) scatter plot
         if SHADE_CENTROIDS and alg == 'nbvd':
             row_centroids, col_centroids = model.centroids[0], model.centroids[1]
@@ -728,6 +762,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
 
     # textual analysis
     representatives, w_occurrence_per_d_cluster = cluster_summary(data, model, logger=None)
+    
 
     if show_images:
         cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=20)
@@ -894,6 +929,28 @@ def misc_statistics (orig_model, new_new_abstracts, new_data, row_col_labels): #
     print("vocab difference (2 not in 1):",len(s2.difference(s1)))
     print("tfidf words missing in all new abstracts:", np.sum(np.sum(new_data,axis=0)==0) )
 
+# /DEL
+def write_ids_to_excel (abstracts, row_classification, abstracts_df, excel_filename):
+    os.makedirs(LOG_BASE_FOLDER, exist_ok=True)
+    sheet_path = os.path.join(LOG_BASE_FOLDER, excel_filename)
+    writer = pd.ExcelWriter(path=sheet_path, engine='xlsxwriter')
+    abstracts = np.array(abstracts)
+
+    for c in range(N_ROW_CLUSTERS):
+        sheet = pd.DataFrame(columns=['idarticle', 'abstract']) # create new empty sheet for this cluster
+
+        # get ids
+        ids_abs = get_article_ids(abstracts[row_classification == c], abstracts_df)
+        ids, unprocessed_abs = zip(*ids_abs)
+        sheet['idarticle'] = ids
+        sheet['abstract'] = unprocessed_abs
+        
+        # write to excel file
+        sheet_name = f"Cluster {c}"
+        sheet.to_excel(writer, sheet_name=sheet_name, index=False)
+        writer.sheets[sheet_name].set_column(0, 0, 15)
+    writer.save() # else it won't save
+
 def main():
     global RNG_SEED
     RNG, RNG_SEED = start_default_rng(seed=RNG_SEED)
@@ -909,6 +966,69 @@ def main():
     # NOTE: docs are normalized (courtesy of sklearn); words arent
     data, vec = do_vectorization(new_abstracts, VECTORIZATION, **vec_kwargs)
     model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
+    
+    # get article ids # /DEL
+    # write_ids_to_excel(new_abstracts, model.row_labels_, df, "orig_abstracts.xlsx") # /DEL
+    
+    # /DEL parte de distancias intra e extra cluster é pra ajudar artigo pedro
+    """
+    n_labels,n_dim,labels = 4, data.shape[1], model.row_labels_
+    r_clust_avg = normalize(get_centroids_by_cluster(data, labels, 4),axis=0)
+    centroids = r_clust_avg
+    mean_extra_cluster_distances_really_really = np.zeros((n_labels,))
+    mean_extra_cluster_distances_really_really_count = np.zeros((n_labels,))
+    for i,row in enumerate(data):
+        label = labels[i]
+        this_centroid = (centroids.T)[label]
+        dists_to_other_centroids = [norm(row-centroid) for centroid in centroids.T]
+        dists_to_other_centroids[label] = np.inf
+        closest_cluster = np.argmin(dists_to_other_centroids)
+        mean_extra_cluster_distances_really_really[label] += dists_to_other_centroids[closest_cluster]
+        mean_extra_cluster_distances_really_really_count += 1
+    mean_extra_cluster_distances_really_really[:] = mean_extra_cluster_distances_really_really[:] / mean_extra_cluster_distances_really_really_count[:]
+        
+    
+    mean_intra_cluster_distances = np.zeros((n_labels,))
+    mean_extra_cluster_distances = np.zeros((n_labels,))
+    mean_extra_cluster_distances_really = np.zeros((n_labels,))
+    for i in range(n_labels):
+        data_i = data[labels == i]
+        data_not_i = data[labels != i]
+        distances_intra = euclidean_distances(data_i, data_i)
+        distances_extra = euclidean_distances(data_i, data_not_i)
+        mean_intra_cluster_distances[i] = np.mean(distances_intra[distances_intra != 0])
+        mean_extra_cluster_distances[i] = np.mean(distances_extra)
+        
+        print("close really", i)
+        closest, d_closest = i, np.inf
+        print("close init to", closest)
+        for j in range(n_labels):
+            if j == i:
+                continue
+            data_j = data[labels == j]
+            d_ij = np.mean(euclidean_distances(data_i, data_j))
+            print(f"   dist {i} {j}: {d_ij}")
+            if d_ij < d_closest:
+                closest = j
+                d_closest = d_ij
+
+        print("closest is", closest, d_closest)
+        mean_extra_cluster_distances_really[i] = d_closest
+            
+    extra_but_centroid = np.zeros((n_labels,))
+    for i in range(n_labels):
+        centroid_i = (centroids.T)[i]
+        distances = [norm(centroid_i - centroid) for centroid in centroids.T]
+        distances[i] = np.inf
+        extra_but_centroid[i] = np.amin(distances)
+
+    print("intra cluster distances", mean_intra_cluster_distances)
+    print("extra mais ou menos", mean_extra_cluster_distances)
+    print("extra cluster distances", mean_extra_cluster_distances_really)
+    print("extra clustter distances like sklearn", mean_extra_cluster_distances_really_really)
+    print("extra jsut centroid", extra_but_centroid)
+    sys.exit(0)
+    """
 
     # analyze new abstracts
     if NEW_ABS:

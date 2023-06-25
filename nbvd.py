@@ -27,11 +27,13 @@ class NBVD_coclustering:
     logger : logging.Logger = None
 
     # properties calculated post init
+    Z: np.ndarray = field(init=False)
     biclusters_: np.ndarray = field(init=False)
     row_labels_: np.ndarray = field(init=False)
     column_labels_: np.ndarray = field(init=False)
     cluster_assoc: np.ndarray = field(init=False)
     centroids: Tuple[np.ndarray] = field(init=False)
+    basis_vectors: Tuple[np.ndarray] = field(init=False)
     R: np.ndarray = field(init=False)
     B: np.ndarray = field(init=False)
     C: np.ndarray = field(init=False)
@@ -44,7 +46,7 @@ class NBVD_coclustering:
         else:
             print(s)
 
-    def get_centroids (R,B,C):
+    def get_basis_vectors (R,B,C):
         # R = (n,k)
         # B = (k,l)
         # C = (l,m)
@@ -53,14 +55,29 @@ class NBVD_coclustering:
         # (BC).T = (m,k)
         ##      k row-centroids (basis vectors for Z's row space)
 
-        col_centroids = R @ B
-        row_centroids = (B @ C).T
+        col_basis = R @ B
+        row_basis = (B @ C).T
+        return (row_basis, col_basis)
+    
+    def get_centroids (Z, rc_labels, n_rc_clusters : Tuple[int,int]):
+        row_labels, col_labels = rc_labels
+        n_row_clusters, n_col_clusters = n_rc_clusters
+        row_centroids = get_centroids_by_cluster(Z, row_labels, n_row_clusters)
+        col_centroids = get_centroids_by_cluster(Z.T, col_labels, n_col_clusters)
         return (row_centroids, col_centroids)
 
-    def get_labels (Z, rc_centroids, n_centroids, centroid_dim, other_centroid_dim):
-        Z_rc_extra = Z.reshape(*Z.shape, 1).repeat(n_centroids, axis=2) # add extra dim for clusters
-        c_rc_extra = rc_centroids.T.reshape(n_centroids, centroid_dim, 1).repeat(other_centroid_dim, axis=2).T # add extra dim for number of samples
-        rc_distances = norm(Z_rc_extra-c_rc_extra, axis=1)
+    def get_labels (Z, rc_centroids, n_centroids, centroid_dim, other_centroid_dim, R=None, C=None, method="centroids"):
+        if method == "centroids":
+            Z_rc_extra = Z.reshape(*Z.shape, 1).repeat(n_centroids, axis=2) # add extra dim for clusters
+            c_rc_extra = rc_centroids.T.reshape(n_centroids, centroid_dim, 1).repeat(other_centroid_dim, axis=2).T # add extra dim for number of samples
+            rc_distances = norm(Z_rc_extra-c_rc_extra, axis=1)
+        elif method == "rbc":
+            if R is None or C is None:
+                raise Exception("[NBVD.get_labels] Please provide R and C to use the 'rbc' method")
+            row = np.argmax(R, axis=1)
+            col = np.argmax(C, axis=0)
+        else:
+            raise Exception(f"[NBVD.get_labels] ERROR: invalid labeling method: {method}")
         return np.argmin(rc_distances, axis=1)
 
     def get_stuff (R, C, B=None, Z=None, centroids=None, method="centroids"):
@@ -69,10 +86,10 @@ class NBVD_coclustering:
 
         n, k = R.shape
         l, m = C.shape
-        if method == "not fancy":
+        if method == "rbc":
             row = np.argmax(R, axis=1)
             col = np.argmax(C, axis=0)
-        elif method == "fancy":
+        elif method == "fancy": # TODO: this only works if n_row_clusters == n_col_clusters 
             U = R.copy()
             V = C.T.copy()
             diag = lambda M : np.diag(np.diag(M))
@@ -87,7 +104,7 @@ class NBVD_coclustering:
             row_centroids, col_centroids = centroids
             m, k = row_centroids.shape
             n, l = col_centroids.shape
-#m=2782
+
             row = NBVD_coclustering.get_labels(Z, row_centroids, k, m, n)
             col = NBVD_coclustering.get_labels(Z.T, col_centroids, l, n, m)
 
@@ -164,8 +181,8 @@ class NBVD_coclustering:
                 self.print_or_log(f"  Attempt #{attempt_no+1} norm: {current_norm}")
 
             R,B,C = results
-            centroids = NBVD_coclustering.get_centroids(R, B, C)
-            _, row_labels, col_labels = NBVD_coclustering.get_stuff(R, C, B=B, Z=Z, centroids=centroids, method="centroids")
+            basis = NBVD_coclustering.get_basis_vectors(R, B, C)
+            _, row_labels, col_labels = NBVD_coclustering.get_stuff(R, C, B=B, Z=Z, method="fancy")
             sil_row = silhouette_score(Z, row_labels)
             sil_col = silhouette_score(Z.T, col_labels)
             silhouette = MeanTuple(sil_row, sil_col)
@@ -192,16 +209,25 @@ class NBVD_coclustering:
         rng = default_rng(seed=self.random_state)
         self.data = np.array(self.data)
         Z = self.data
+        self.Z = self.data # in case we prefer to call it this way
 
-        # clustering
-        if self.symmetric:
-            k,l = Z.shape
-            if k != l: 
+        # clustering # /DEL
+        if self.symmetric: # /DEL
+            n,m = Z.shape
+            if n != m: 
                 raise Exception("Number of row clusters is different from number of column clusters.")
         self.R, self.B, self.C = self.do_things(Z, symmetric=self.symmetric, rng=rng, verbose=self.verbose)
-        if self.symmetric:
+        if self.symmetric: # /DEL
             self.S = self.R
 
-        self.centroids = NBVD_coclustering.get_centroids(self.R, self.B, self.C)
-        self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(self.R, self.C, self.B, self.data, self.centroids)
+        self.basis_vectors = NBVD_coclustering.get_basis_vectors(self.R, self.B, self.C)
+        self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(
+                            self.R, self.C, self.B, self.data, 
+                            method="fancy")
         self.cluster_assoc = NBVD_coclustering.get_cluster_assoc(self.R, self.B, self.C)
+        self.centroids = NBVD_coclustering.get_centroids(
+                        self.data, 
+                        (self.row_labels_, self.column_labels_), 
+                        (self.n_row_clusters, self.n_col_clusters)
+                        )
+
