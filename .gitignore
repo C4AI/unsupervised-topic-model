@@ -15,4 +15,5 @@ nohup.out
 *.xlsx*
 *.txt
 *.pdf
+*.png
 pira.ipynb

@@ -10,6 +10,7 @@ import logging
 from typing import Tuple
 from my_utils import *
 
+DEFAULT_NBVD_LABELING_METHOD = "rbc"
 
 @dataclass(eq=False)
 class NBVD_coclustering:
@@ -182,7 +183,7 @@ class NBVD_coclustering:
 
             R,B,C = results
             basis = NBVD_coclustering.get_basis_vectors(R, B, C)
-            _, row_labels, col_labels = NBVD_coclustering.get_stuff(R, C, B=B, Z=Z, method="fancy")
+            _, row_labels, col_labels = NBVD_coclustering.get_stuff(R, C, B=B, Z=Z, method=DEFAULT_NBVD_LABELING_METHOD)
             sil_row = silhouette_score(Z, row_labels)
             sil_col = silhouette_score(Z.T, col_labels)
             silhouette = MeanTuple(sil_row, sil_col)
@@ -223,7 +224,7 @@ class NBVD_coclustering:
         self.basis_vectors = NBVD_coclustering.get_basis_vectors(self.R, self.B, self.C)
         self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(
                             self.R, self.C, self.B, self.data, 
-                            method="fancy")
+                            method=DEFAULT_NBVD_LABELING_METHOD)
         self.cluster_assoc = NBVD_coclustering.get_cluster_assoc(self.R, self.B, self.C)
         self.centroids = NBVD_coclustering.get_centroids(
                         self.data, 

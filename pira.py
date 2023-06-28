@@ -68,8 +68,8 @@ SHADE_COCLUSTERS = True
 NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=True
-NEW_ABS=False
+SHOW_IMAGES=False
+NEW_ABS=True
 LOG_BASE_FOLDER = "classification_info"
 
 ############################################################################## 
@@ -442,9 +442,9 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
     print(*[f"{t[0]}\n{t[1]}" for t in zip(col_cluster_representatives.items(), col_cluster_representatives2.items())], sep="\n")
     print("comum:", *[set(c1).intersection(set(c2)) for c1,c2 in zip(col_cluster_representatives1.values(), col_cluster_representatives2.values())], sep="\n")
     """
-    # DBG
+    #####################  DBG  ##################### /DEL
     # visually compare different representative selection methods
-    if SHOW_IMAGES:
+    if False and SHOW_IMAGES:
         def __reps_dict_to_reps_matrix_and_labels (reps_dict, data, n_clusters):
             n_dim = data.shape[1]
             reps_matrix, reps_labels = np.zeros((n_clusters*N_REPS_COMPARE, n_dim), dtype=np.float64), np.zeros((n_clusters*N_REPS_COMPARE,), dtype=np.int64)
@@ -520,6 +520,7 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
         __plot_comparison(row_cluster_representatives_all, data, model, kind='rows', rep_choosing_methods_labels=rep_choosing_methods_labels)
         __plot_comparison(col_cluster_representatives_all, data.T, model, kind='cols', rep_choosing_methods_labels=rep_choosing_methods_labels)
         plt.show() 
+    #####################  DBG  ##################### /DEL
 
     return (row_cluster_representatives, col_cluster_representatives), w_occurrence_per_d_cluster
 
@@ -737,18 +738,35 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
                 shade_coclusters(data, (model.row_labels_, model.column_labels_), 
                     model.cluster_assoc, RNG=RNG, aspect_ratio=ASPECT_RATIO)
         
-        # TODO: plot normalized basis vectors as well
         # centroid (and dataset) (normalized) scatter plot
         if SHADE_CENTROIDS and alg == 'nbvd':
             row_centroids, col_centroids = model.centroids[0], model.centroids[1]
-            model.row_pca, model.row_c_palette, _ = centroid_scatter_plot(data, row_centroids, model.row_labels_, title="Rows and Row centroids", RNG=RNG)
-            model.col_pca, model.col_c_palette, _ = centroid_scatter_plot(data.T, col_centroids, model.column_labels_, title="Columns and Column centroids", RNG=RNG)
+            model.row_pca, model.row_c_palette, _ = centroid_scatter_plot(
+                    data, 
+                    row_centroids, 
+                    model.row_labels_,
+                    title="Rows and Row centroids", 
+                    basis_vectors=model.basis_vectors[0],
+                    save_path="doc_scatter_plot.png",
+                    RNG=RNG
+                )
+            #"""  # DBG # keep this i think
+            model.col_pca, model.col_c_palette, _ = centroid_scatter_plot(
+                    data.T, 
+                    col_centroids, 
+                    model.column_labels_, 
+                    title="Columns and Column centroids", 
+                    basis_vectors=model.basis_vectors[1], 
+                    save_path="word_scatter_plot.png",
+                    RNG=RNG
+            )
+            #"""
         
         # norm evolution
         if hasattr(model, "norm_history"):
             plot_norm_history(model)
 
-        # general plots
+        # general plots #/DEL
         if alg == 'nbvd':
             to_plot = [data, model.R@model.B@model.C]
             names = ["Original dataset", "Reconstructed matrix RBC"]
@@ -758,7 +776,9 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         elif alg =="nbvd_waldyr":
             to_plot = [data, model.U@model.S@model.V.T, model.S]
             names = ["Original dataset", "Reconstructed matrix USV.T", "Block value matrix S"]
-        plot_matrices(to_plot, names, timer = None if only_one else 2*timer, aspect_ratio=ASPECT_RATIO)
+        # TODO: make this nicer maybe keep the timer logic
+        #plot_matrices(to_plot, names, timer = None if only_one else 2*timer, aspect_ratio=ASPECT_RATIO)
+        plt.show()
 
     # textual analysis
     representatives, w_occurrence_per_d_cluster = cluster_summary(data, model, logger=None)
@@ -807,7 +827,11 @@ def new_abs_reduced_centroids_plot (Z, new_labels, orig_model, RNG=None):
     RNG = RNG or np.default_rng()
     # plot new samples and old cluster averages
     old_row_centroids = get_centroids_by_cluster(orig_model.data, orig_model.row_labels_, n_clusters=orig_model.centroids[0].shape[1])
-    _, _, ax = centroid_scatter_plot(Z, old_row_centroids, new_labels, title="New samples and Row centroids", pca=orig_model.row_pca, palette=orig_model.row_c_palette, RNG=RNG)
+    _, _, ax = centroid_scatter_plot(
+        Z, old_row_centroids, new_labels, 
+        title="New samples and Row centroids", pca=orig_model.row_pca,
+        palette=orig_model.row_c_palette, save_path="doc_new_scatter_plot.png", RNG=RNG
+    )
 
     # plot new cluster averages
     new_centroids = get_centroids_by_cluster(Z, new_labels, n_clusters=orig_model.centroids[0].shape[1])

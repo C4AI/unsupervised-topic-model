@@ -6,6 +6,7 @@ from numpy.random import default_rng
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
 from sklearn.datasets import make_biclusters, make_blobs
 from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.decomposition import *
@@ -267,9 +268,15 @@ def shaded_label_matrix (data, labels, kind, method_name=None, RNG=None, opacity
     fig, ax = plt.subplots()
     ax.matshow(data, cmap=plt.cm.Blues)
 
-    # colors for shading
+    # determine a good color registry
     n = 1+max(labels) # 0-indexed
-    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+    if n <= len(mcolors.TABLEAU_COLORS):
+        color_registry = mcolors.TABLEAU_COLORS 
+    else:
+        color_registry = mcolors.CSS4_COLORS
+
+    # colors for shading
+    palette = RNG.choice(list(color_registry.values()), size=n, replace=False) # XKCD_COLORS ?
     colors = [palette[label] for label in labels]
     legend_dict = {}
 
@@ -297,9 +304,15 @@ def shade_coclusters (data, row_col_labels : Tuple[int], cluster_assoc, RNG=None
     row_labels, col_labels = row_col_labels
     ax.matshow(data, cmap=plt.cm.Blues, alpha=0) # just to orient axes
 
+    # determine a good color registry
+    n = cluster_assoc.sum() # significant (True) values
+    if n <= len(mcolors.TABLEAU_COLORS):
+        color_registry = mcolors.TABLEAU_COLORS 
+    else:
+        color_registry = mcolors.CSS4_COLORS
+
     # colors for shading
-    n = cluster_assoc.sum() # significant (True) associations
-    palette = RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+    palette = RNG.choice(list(color_registry.values()), size=n, replace=False) # XKCD_COLORS ?
     color_dict, max_color = {}, -1
     legend_dict = {}
 
@@ -348,23 +361,40 @@ def get_centroids_by_cluster (data, labels, n_clusters):
 # 2 pontos definem uma reta
 # para cada cluster: normalizar um o outro nao, aplicar pca, descobrir direcao da reta, reta a partir da origem
 
-def centroid_scatter_plot (samples, centroids, labels, title, basis_vectors=None, pca=None, palette=None, centroid_size=400, RNG=None):
+def centroid_scatter_plot (members, centroids, labels, basis_vectors=None, 
+    title="Reduced-dimension scatter plot", pca=None, palette=None, centroid_size=400, 
+    normalize_points=True, save_path=None, RNG=None
+):
     """
-    Dimension-reduced plot of samples and centroids, coloring points according to labels.
+    Dimension-reduced plot of cluster members and centroids, coloring points according to labels.
     """
+    # TODO: get better colors
     RNG = RNG or np.random.default_rng()
-    # seed = RNG.integers(0, 2147483647) #DBG: better colors not doing an additional call to RNG
-
+    _ = RNG.random() # re-roll RNG # DBG
     _, n = centroids.shape
-    points = normalize(np.vstack([samples, centroids.T]), axis=1) # normalize before PCA
-    #points = np.vstack([samples, centroids.T]) # normalize before PCA # ?DEL
+
+    # determine a good color registry
+    if n <= len(mcolors.TABLEAU_COLORS):
+        color_registry = mcolors.TABLEAU_COLORS 
+    else:
+        color_registry = mcolors.CSS4_COLORS
+
+    # normalize before PCA
+    normalized_members = normalize(members, axis=1) if normalize_points else members
+    normalized_centroids = normalize(centroids.T, axis=1) if normalize_points else centroids.T
+    points = np.vstack([normalized_members, normalized_centroids])
+
+    # TODO: maybe use TruncatedSVD instead?
     if not pca:
         pca = PCA(n_components=2, random_state=42)
-        pca.fit(points)
+        pca.fit(normalized_members) # don't fit on the centroids
     reduced_points = pca.transform(points)
-    #print("samples, features:", pca_row.n_samples_, pca_row.n_features_)
-    #print("reduced_points:", reduced_points.shape)
-    palette = palette if (not palette is None) else RNG.choice(list(mcolors.CSS4_COLORS.values()), size=n, replace=False) # XKCD_COLORS ?
+    #print("members, features:", pca_row.n_members_, pca_row.n_features_) # /DEL
+    #print("reduced_points:", reduced_points.shape) # /DEL
+    palette = (palette 
+                if palette is not None
+                else RNG.choice(list(color_registry.values()), size=n, replace=False)
+    )
     colors = [palette[label] for label in labels]
 
     fig = plt.figure()
@@ -372,17 +402,50 @@ def centroid_scatter_plot (samples, centroids, labels, title, basis_vectors=None
     
     # plot centroids
     for i in range(n):
-        # NOTE: a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
-        ax.scatter(reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], color=palette[i], marker="s", s=centroid_size, alpha=0.8)
-    ax.scatter(reduced_points[:-n , 0], reduced_points[:-n , 1], color=colors)
+        # a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
+        ax.scatter(
+            reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], 
+            color=palette[i], marker="s", s=centroid_size
+        )
+    # plot members
+    ax.scatter(
+        reduced_points[:-n , 0], reduced_points[:-n , 1], 
+        color=colors, marker="o", edgecolors="white",
+    )
     
-    # create legend
-    handles = []
+    # calculate reduced-dimension basis vectors
+    basis_points_reduced = pca.transform(basis_vectors.T)
+    print("basis points reduced:\n",basis_points_reduced)
+    
+    # logic for ensuring view doesn't change and basis vector lines don't end midscreen
+    ax.autoscale(False) # turn off autoscale of the axis view
+    x_lim, y_lim = plt.gca().get_xlim(), plt.gca().get_ylim() # get x and y view limits
+    biggest_visible_line_length = (x_lim[1] - x_lim[0])**2 + (y_lim[1] - y_lim[0])**2
+    smallest_magn = np.min(norm(basis_points_reduced, axis=1))
+    scale_factor = biggest_visible_line_length / smallest_magn
+    print(f"[myutils.centroid_scatter] scale factor is: {scale_factor}")
+
+    # plot basis vector lines
     for i in range(n):
-        handles.append(mpatches.Patch(color=palette[i], label=i))
-    legend = ax.legend(handles, list(range(n)), bbox_to_anchor=(0.99,1), loc="upper left")
+        direction_vector = basis_points_reduced[i,:]
+        direction_points = np.vstack([[0,0], direction_vector, scale_factor*direction_vector])
+        print(f"basis direction line {i}:\n{direction_points}")
+        ax.plot(
+            direction_points[:, 0], direction_points[:, 1], 
+            color=palette[i], alpha=0.8, linestyle="dotted", marker="" # empty marker to hide points
+        )
+
+    # create legend
+    handles = [mpatches.Patch(color=palette[i], label=i) for i in range(n)]
+    handles.append(mlines.Line2D([], [], color='black', linestyle='dotted'))
+    labels = [f"Cluster {i}" for i in range(n)]
+    labels.append("Basis vector\ndirections")
+    legend = ax.legend(handles, labels, bbox_to_anchor=(0.99,1), loc="upper left")
     plt.gca().add_artist(legend) # manually add legend so we can add new legends later
     plt.title(title)
+
+    if save_path:
+        fig.savefig(save_path, dpi=300)
     return (pca, palette, ax)
 
 def plot_norm_history (model):
