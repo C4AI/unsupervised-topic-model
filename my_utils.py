@@ -357,13 +357,9 @@ def get_centroids_by_cluster (data, labels, n_clusters):
         centroids[:, k] = np.mean(data[mask, :], axis=0)
     return centroids
 
-# TODO: fazer basis_vectors
-# 2 pontos definem uma reta
-# para cada cluster: normalizar um o outro nao, aplicar pca, descobrir direcao da reta, reta a partir da origem
-
 def centroid_scatter_plot (members, centroids, labels, basis_vectors=None, 
     title="Reduced-dimension scatter plot", pca=None, palette=None, centroid_size=400, 
-    normalize_points=True, save_path=None, RNG=None
+    normalize_centroids=False, save_path=None, RNG=None
 ):
     """
     Dimension-reduced plot of cluster members and centroids, coloring points according to labels.
@@ -380,8 +376,8 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
         color_registry = mcolors.CSS4_COLORS
 
     # normalize before PCA
-    normalized_members = normalize(members, axis=1) if normalize_points else members
-    normalized_centroids = normalize(centroids.T, axis=1) if normalize_points else centroids.T
+    normalized_members = normalize(members, axis=1)
+    normalized_centroids = normalize(centroids.T, axis=1) if normalize_centroids else centroids.T
     points = np.vstack([normalized_members, normalized_centroids])
 
     # TODO: maybe use TruncatedSVD instead?
@@ -400,46 +396,52 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
     fig = plt.figure()
     ax = fig.add_subplot(1, 21, (1,18)) # make a subplot that spans the left-side (n-1)/n of the figure.
     
+    # plot members
+    ax.scatter(
+        reduced_points[:-n , 0], reduced_points[:-n , 1], 
+        color=colors, marker="o", edgecolors="white", 
+        #alpha=0.45
+    )
     # plot centroids
     for i in range(n):
         # a[-2:-1] returns the 2nd to last value; a[-1:0] does not; so, we do a[-1:][0]
         ax.scatter(
             reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], 
-            color=palette[i], marker="s", s=centroid_size
+            color=palette[i], marker="s", 
+            s=centroid_size,
+            alpha=0.7
         )
-    # plot members
-    ax.scatter(
-        reduced_points[:-n , 0], reduced_points[:-n , 1], 
-        color=colors, marker="o", edgecolors="white",
-    )
     
     # calculate reduced-dimension basis vectors
-    basis_points_reduced = pca.transform(basis_vectors.T)
-    print("basis points reduced:\n",basis_points_reduced)
-    
-    # logic for ensuring view doesn't change and basis vector lines don't end midscreen
-    ax.autoscale(False) # turn off autoscale of the axis view
-    x_lim, y_lim = plt.gca().get_xlim(), plt.gca().get_ylim() # get x and y view limits
-    biggest_visible_line_length = (x_lim[1] - x_lim[0])**2 + (y_lim[1] - y_lim[0])**2
-    smallest_magn = np.min(norm(basis_points_reduced, axis=1))
-    scale_factor = biggest_visible_line_length / smallest_magn
-    print(f"[myutils.centroid_scatter] scale factor is: {scale_factor}")
+    if basis_vectors is not None:
+        basis_points_reduced = pca.transform(basis_vectors.T)
+        #print("basis points reduced:\n",basis_points_reduced) #DBG
+        
+        # logic for ensuring view doesn't change and basis vector lines don't end midscreen
+        ax.autoscale_view() # force autoscale of the axis view now
+        ax.autoscale(False) # turn off autoscale
+        x_lim, y_lim = plt.gca().get_xlim(), plt.gca().get_ylim() # get x and y view limits
+        biggest_visible_line_length = (x_lim[1] - x_lim[0])**2 + (y_lim[1] - y_lim[0])**2
+        smallest_magn = np.min(norm(basis_points_reduced, axis=1))
+        scale_factor = biggest_visible_line_length / smallest_magn
+        #print(f"[myutils.centroid_scatter] scale factor is: {scale_factor}") #DBG
 
-    # plot basis vector lines
-    for i in range(n):
-        direction_vector = basis_points_reduced[i,:]
-        direction_points = np.vstack([[0,0], direction_vector, scale_factor*direction_vector])
-        print(f"basis direction line {i}:\n{direction_points}")
-        ax.plot(
-            direction_points[:, 0], direction_points[:, 1], 
-            color=palette[i], alpha=0.8, linestyle="dotted", marker="" # empty marker to hide points
-        )
+        # plot basis vector lines
+        for i in range(n):
+            direction_vector = basis_points_reduced[i,:]
+            direction_points = np.vstack([[0,0], direction_vector, scale_factor*direction_vector])
+            #print(f"basis direction line {i}:\n{direction_points}") #DBG
+            ax.plot(
+                direction_points[:, 0], direction_points[:, 1], 
+                color=palette[i], alpha=0.8, linestyle="dotted", marker="" # empty marker to hide points
+            )
 
     # create legend
     handles = [mpatches.Patch(color=palette[i], label=i) for i in range(n)]
-    handles.append(mlines.Line2D([], [], color='black', linestyle='dotted'))
     labels = [f"Cluster {i}" for i in range(n)]
-    labels.append("Basis vector\ndirections")
+    if basis_vectors is not None:
+        handles.append(mlines.Line2D([], [], color='black', linestyle='dotted'))
+        labels.append("Basis vector\ndirections")
     legend = ax.legend(handles, labels, bbox_to_anchor=(0.99,1), loc="upper left")
     plt.gca().add_artist(legend) # manually add legend so we can add new legends later
     plt.title(title)

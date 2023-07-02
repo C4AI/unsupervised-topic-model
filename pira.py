@@ -43,17 +43,13 @@ stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre'
 ])
 # false positives: Cu, Ca,
 
-# w2v:
-# 42123456 (8,5)
-# 12 (4,6) dim=50
-# tfidf (reduzido):
-# 42 (4,4) cent_select=false
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 4,4
 RNG_SEED=423
 VECTORIZATION='tfidf'
-#vec_kwargs = Bunch(min_df=4, max_df=0.98, stop_words='english')
 vec_kwargs = Bunch(min_df=4, stop_words=stop_words_nltk, lowercase=False)
 
+ITER_MAX=2000
+N_ATTEMPTS=1 # DBG
 W2V_DIM=100
 ALG='nbvd'
 WAIT_TIME = 4 # wait time between tasks
@@ -68,8 +64,8 @@ SHADE_COCLUSTERS = True
 NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
-SHOW_IMAGES=False
-NEW_ABS=True
+SHOW_IMAGES=True
+NEW_ABS=False
 LOG_BASE_FOLDER = "classification_info"
 
 ############################################################################## 
@@ -668,7 +664,7 @@ def kmeans_fix_labels (labels, RNG, probability=0.5):
     return new_labels
 
 def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG, 
-        show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None, iter_max=2000):
+        show_images=True, first_image_save_path=None, RNG_SEED=None, logger=None, iter_max=ITER_MAX):
     RNG = np.random.default_rng(RNG_SEED)
 
     if logger:
@@ -677,7 +673,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         print(f"shape: {data.shape}")
     timer = None if only_one else WAIT_TIME * show_images 
 
-    """
+    """ #/DEL?
     if not only_one:
         # plot original data to build suspense AND save figure if a save path is provided
         plot_matrices([data], ["Original dataset"], timer=timer, savefig=first_image_save_path)
@@ -686,10 +682,10 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     # do co-clustering
     if alg == 'nbvd':
         model = NBVD_coclustering(data, n_row_clusters=N_ROW_CLUSTERS, 
-            n_col_clusters=N_COL_CLUSTERS, n_attempts=1, iter_max=iter_max, random_state=RNG_SEED, 
-            verbose=False, save_history=MOVIE, save_norm_history=NORM_PLOT, logger=logger)
+            n_col_clusters=N_COL_CLUSTERS, n_attempts=N_ATTEMPTS, iter_max=iter_max, random_state=RNG_SEED, 
+            verbose=True, save_history=MOVIE, save_norm_history=NORM_PLOT, logger=logger)
     elif alg == 'wbkm':
-        model = wbkm.WBKM_coclustering(data, n_clusters=N_ROW_CLUSTERS, n_attempts=1,
+        model = wbkm.WBKM_coclustering(data, n_clusters=N_ROW_CLUSTERS, n_attempts=N_ATTEMPTS,
             random_state=RNG_SEED, verbose=True, logger=logger)
     elif alg == 'spectralco':
         model = SpectralCoclustering(n_clusters=N_ROW_CLUSTERS, random_state=RNG_SEED)
@@ -746,11 +742,10 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
                     row_centroids, 
                     model.row_labels_,
                     title="Rows and Row centroids", 
-                    basis_vectors=model.basis_vectors[0],
+                    #basis_vectors=model.basis_vectors[0],
                     save_path="doc_scatter_plot.png",
                     RNG=RNG
                 )
-            #"""  # DBG # keep this i think
             model.col_pca, model.col_c_palette, _ = centroid_scatter_plot(
                     data.T, 
                     col_centroids, 
@@ -760,7 +755,6 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
                     save_path="word_scatter_plot.png",
                     RNG=RNG
             )
-            #"""
         
         # norm evolution
         if hasattr(model, "norm_history"):
@@ -790,13 +784,13 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     # return general statistics
     if alg == 'nbvd':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
-            best_iter=model.best_iter, best_norm=model.best_norm, n_attempts=1)
+            best_iter=model.best_iter, best_norm=model.best_norm, n_attempts=N_ATTEMPTS)
     elif alg == 'wbkm':
         bunch = Bunch(silhouette=MeanTuple(*silhouette), 
             max_iter_reached=model.best_max_iter_reached, best_norm=model.best_norm,
-            no_zero_cols=model.best_no_zero_cols, n_attempts=1)
+            no_zero_cols=model.best_no_zero_cols, n_attempts=N_ATTEMPTS)
     else:
-        bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=1)
+        bunch = Bunch(silhouette=MeanTuple(*silhouette), n_attempts=N_ATTEMPTS)
     return (model, bunch)
 
 def load_new_new_abstracts (path, n_abstracts, old_abstracts):
@@ -819,7 +813,7 @@ def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=
     n, _ = Z.shape
 
     # classify rows and columns
-    row_classification = NBVD_coclustering.get_labels(Z, row_centroids, k, m, n)
+    row_classification = NBVD_coclustering.get_labels_new_data(Z, row_centroids, k, m, n)
     col_classification = model.column_labels_
     return (Z, row_classification, col_classification)
 
@@ -989,7 +983,7 @@ def main():
     # do co-clustering
     # NOTE: docs are normalized (courtesy of sklearn); words arent
     data, vec = do_vectorization(new_abstracts, VECTORIZATION, **vec_kwargs)
-    model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, iter_max=2000, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
+    model, statistics = do_task_single(data, new_abstracts, vec, alg=ALG, RNG_SEED=RNG_SEED, show_images=SHOW_IMAGES)
     
     # get article ids # /DEL
     # write_ids_to_excel(new_abstracts, model.row_labels_, df, "orig_abstracts.xlsx") # /DEL
