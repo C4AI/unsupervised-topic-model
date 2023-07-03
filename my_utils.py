@@ -359,7 +359,7 @@ def get_centroids_by_cluster (data, labels, n_clusters):
 
 def centroid_scatter_plot (members, centroids, labels, basis_vectors=None, 
     title="Reduced-dimension scatter plot", pca=None, palette=None, centroid_size=400, 
-    normalize_centroids=False, save_path=None, RNG=None
+    normalize_centroids=True, save_path=None, RNG=None
 ):
     """
     Dimension-reduced plot of cluster members and centroids, coloring points according to labels.
@@ -400,7 +400,6 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
     ax.scatter(
         reduced_points[:-n , 0], reduced_points[:-n , 1], 
         color=colors, marker="o", edgecolors="white", 
-        #alpha=0.45
     )
     # plot centroids
     for i in range(n):
@@ -409,7 +408,7 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
             reduced_points[-n+i: , 0][0], reduced_points[-n+i: , 1][0], 
             color=palette[i], marker="s", 
             s=centroid_size,
-            alpha=0.7
+            #alpha=0.7
         )
     
     # calculate reduced-dimension basis vectors

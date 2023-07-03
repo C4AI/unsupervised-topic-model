@@ -38,10 +38,13 @@ stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre'
     'likely','later','would','together','even','part','using','mostly','several','values','important','although', # misc 3
     'study','studies','studied','research','paper','suggests','suggest','indicate','indicates','show','shows','result','results','present','presents','presented','consider','considered','considering','proposed','discussed','licensee','authors','aims', # research jargon 1
     'analysis','obtained','estimated','observed','data','model','sources','revealed','found','problem','used','article', # research jargon 2
-    #'os','nature','algorithm','poorly','strongly','rights','universidade','years','yr','showed', # TODO: double-check
-    # TODO: regex for copyright
+
 ])
-# false positives: Cu, Ca,
+  
+# TODO: double-check nohing breaks and:
+# add: 'os','nature','algorithm','poorly','strongly','universidade','years','yr','showed', 
+# possibly some meaning: bpd,bbl (barrel per day -> petroleum), Cu (copper), Ca (calcium), rights (to drilling)
+# TODO: regex for copyright
 
 N_ROW_CLUSTERS, N_COL_CLUSTERS = 4,4
 RNG_SEED=423
@@ -55,7 +58,8 @@ ALG='nbvd'
 WAIT_TIME = 4 # wait time between tasks
 rerun_embedding=True
 LABELING_METHOD="centroids method" # /DEL this is just to create a label
-CLUSTER_AVG_IS_CENTROID_FOR_CHOOSING_REPS=False # TODO: decide which is better
+CLUSTER_CENTER_IS_AVERAGE=False # TODO: decide which is better
+DEFAULT_CLUSTER_CENTER_METHOD = "cluster_avgs" if CLUSTER_CENTER_IS_AVERAGE else "prototype_centers"
 KEEP_WORD_REPS=True # required for centroid method (were reusing the column centroid after all)
 
 LABEL_CHECK = True
@@ -65,7 +69,7 @@ NORM_PLOT = False # (NBVD) display norm plot
 MOVIE=False
 ASPECT_RATIO=4 # 1/6 for w2v; 10 for full tfidf; 4 for partial
 SHOW_IMAGES=True
-NEW_ABS=False
+NEW_ABS=True
 LOG_BASE_FOLDER = "classification_info"
 
 ############################################################################## 
@@ -197,7 +201,9 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
             yield i
         if count >= n_representatives:
             return # stop yielding
-def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, method='centroid_dif', kind=None) -> dict:
+def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, 
+        method='centroid_dif', kind=None, 
+        cluster_center_method=DEFAULT_CLUSTER_CENTER_METHOD) -> dict:
     cluster_representatives = {}
 
     # get relevant properties
@@ -209,14 +215,23 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         raise Exception("get_representatives: must specify 'kind'")
     original_data = model.__original_data if hasattr(model, "__original_data") else None
     vec = model.__vectorization if hasattr(model, "__vectorization") else None
-    if hasattr(model, "centroids"):
-        if kind == 'docs':
-            centroids = model.centroids[0]
-        elif kind == 'words':
-            centroids = model.centroids[1]
-        centroids_ = get_centroids_by_cluster(data, labels, n_clusters) if CLUSTER_AVG_IS_CENTROID_FOR_CHOOSING_REPS else centroids
+
+    # choose cluster centers
+    if kind == 'docs':
+        elements_index = 0
+    elif kind == 'words':
+        elements_index = 1
+    if cluster_center_method == "prototype_centers":
+        print("[get_representatives] using prototype centers as representatives")
+        centroids_ = model.basis_vectors[elements_index]
+    elif cluster_center_method == "cluster_avgs":
+        print("[get_representatives] using (old) cluster avgs as representatives")
+        centroids_ = model.centroids[elements_index]
+        # TODO: why are we using the new cluster avgs?
+        #centroids_ = get_centroids_by_cluster(data, labels, n_clusters)
     else:
-        centroids_ = get_centroids_by_cluster(data, labels, n_clusters)
+        raise Exception(f"[get_representatives] invalid method: {cluster_center_method}")
+
     if hasattr(model, "R"):
         R,C = model.R,model.C
 
@@ -742,7 +757,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
                     row_centroids, 
                     model.row_labels_,
                     title="Rows and Row centroids", 
-                    #basis_vectors=model.basis_vectors[0],
+                    basis_vectors=model.basis_vectors[0],
                     save_path="doc_scatter_plot.png",
                     RNG=RNG
                 )
@@ -804,16 +819,19 @@ def load_new_new_abstracts (path, n_abstracts, old_abstracts):
 
 def vec_and_class_new_abstracts (extra_abstracts : Iterable, vec, model, logger=None, verbose=False):
     print_or_log = logger.info if logger else print
-    row_centroids, col_centroids = model.centroids
-    m, k = row_centroids.shape
-    n, l = col_centroids.shape
+    if CLUSTER_CENTER_IS_AVERAGE:
+        row_centers, col_centers = model.centroids
+    else:
+        row_centers, col_centers = model.basis_vectors
+    m, k = row_centers.shape
+    n, l = col_centers.shape
 
     # vectorize abstracts
     Z = vec.transform(extra_abstracts).toarray()
     n, _ = Z.shape
 
     # classify rows and columns
-    row_classification = NBVD_coclustering.get_labels_new_data(Z, row_centroids, k, m, n)
+    row_classification = NBVD_coclustering.get_labels_new_data(Z, row_centers, k, m, n)
     col_classification = model.column_labels_
     return (Z, row_classification, col_classification)
 
@@ -824,7 +842,8 @@ def new_abs_reduced_centroids_plot (Z, new_labels, orig_model, RNG=None):
     _, _, ax = centroid_scatter_plot(
         Z, old_row_centroids, new_labels, 
         title="New samples and Row centroids", pca=orig_model.row_pca,
-        palette=orig_model.row_c_palette, save_path="doc_new_scatter_plot.png", RNG=RNG
+        palette=orig_model.row_c_palette, save_path="doc_new_scatter_plot.png", RNG=RNG,
+        basis_vectors = orig_model.basis_vectors[0]
     )
 
     # plot new cluster averages
@@ -834,9 +853,9 @@ def new_abs_reduced_centroids_plot (Z, new_labels, orig_model, RNG=None):
     for i, r_centroid in enumerate(reduced_new_points):
         ax.scatter(*r_centroid, color=orig_model.row_c_palette[i], marker="*", s=700, alpha=0.8)            
     
-    # plot matrix centroids
-    m_centroids = orig_model.centroids[0]
-    new_points = normalize(m_centroids.T, axis=1)
+    # plot prototype centers
+    m_prot_centers = orig_model.basis_vectors[0]
+    new_points = normalize(m_prot_centers.T, axis=1)
     reduced_new_points = orig_model.row_pca.transform(new_points)
     for i, r_centroid in enumerate(reduced_new_points):
         ax.scatter(*r_centroid, color=orig_model.row_c_palette[i], marker="o", s=700, alpha=0.8)
@@ -853,10 +872,16 @@ def new_abs_cluster_summary_bar_plot (data, new_abstracts, row_col_labels, row_c
     model = FooClass()
     model.__original_data = new_abstracts
     model.row_labels_, model.column_labels_ = row_col_labels
-    model.centroids = row_col_centroids
+    model.new_centroids = row_col_centroids
     model.__vectorization, model.cluster_assoc =  orig_model.__vectorization, orig_model.cluster_assoc # reuse vectorization and cluster assoc
+    
+    model.centroids = orig_model.centroids
+    if not CLUSTER_CENTER_IS_AVERAGE:
+        model.basis_vectors = orig_model.basis_vectors
+    
     if hasattr(orig_model,"row_pca"):
-        model.row_pca, model.col_pca, model.row_c_palette, model.col_c_palette = orig_model.row_pca, PCA(n_components=2, random_state=42).fit(normalize(np.vstack([data.T, row_col_centroids[1].T]))), orig_model.row_c_palette, orig_model.col_c_palette
+        model.col_pca = PCA(n_components=2, random_state=42).fit(normalize(np.vstack([data.T, row_col_centroids[1].T])))
+        model.row_pca, model.row_c_palette, model.col_c_palette = orig_model.row_pca, orig_model.row_c_palette, orig_model.col_c_palette
 
     _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, word_reps=orig_word_reps, logger=logger)
     if bar_plot:
@@ -919,8 +944,6 @@ def highlight_passages (new_abstracts, new_abs_classification, row_centroids, or
         # print info
         if i < 10:
             print(f"ABSTRACT {i} ( in cluster {label}):\n")
-            if i == 0:
-                print("selected0", selected)
             for n_seg, segm in enumerate(segmented_abstracts[segm_count:segm_count+abs_sizes[i]]):
                 if n_seg not in selected:
                     print(f"\t{segm}")
@@ -1055,9 +1078,11 @@ def main():
         # get abstract labels (and reuse the word labels)
         Z, new_abs_classification, _ = vec_and_class_new_abstracts(new_new_abstracts, vec, model, verbose=False)
         print_silhouette_score(Z, new_abs_classification, model.column_labels_)
+
         # calculate new column centroids since we have a new word space (due to having different abstracts)
-        new_row_centroids, new_col_centroids = model.centroids[0], get_centroids_by_cluster(Z.T, model.column_labels_, model.n_col_clusters)
-        print("new col centroid sum", np.sum(new_col_centroids, axis=0))
+        new_row_centroids = get_centroids_by_cluster(Z, new_abs_classification, model.n_row_clusters)
+        new_col_centroids = get_centroids_by_cluster(Z.T, model.column_labels_, model.n_col_clusters)
+        
         # print document and word representatives; do a bar plot summarizing this information
         new_abs_cluster_summary_bar_plot(Z, new_new_abstracts, (new_abs_classification, model.column_labels_), 
             (new_row_centroids, new_col_centroids), model, 
