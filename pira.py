@@ -72,6 +72,8 @@ SHOW_IMAGES=True
 NEW_ABS=True
 LOG_BASE_FOLDER = "classification_info"
 
+REP_METHOD_FOR_ORIG_ABS="matrix_assoc_fancy" # centroid_dif #DBG
+
 ############################################################################## 
 # to use a set number of cpus: 
 #   taskset --cpu-list 0-7 python "pira.py"
@@ -201,6 +203,7 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
             yield i
         if count >= n_representatives:
             return # stop yielding
+
 def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, 
         method='centroid_dif', kind=None, 
         cluster_center_method=DEFAULT_CLUSTER_CENTER_METHOD) -> dict:
@@ -216,30 +219,15 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
     original_data = model.__original_data if hasattr(model, "__original_data") else None
     vec = model.__vectorization if hasattr(model, "__vectorization") else None
 
-    # choose cluster centers
-    if kind == 'docs':
-        elements_index = 0
-    elif kind == 'words':
-        elements_index = 1
-    if cluster_center_method == "prototype_centers":
-        print("[get_representatives] using prototype centers as representatives")
-        centroids_ = model.basis_vectors[elements_index]
-    elif cluster_center_method == "cluster_avgs":
-        print("[get_representatives] using (old) cluster avgs as representatives")
-        centroids_ = model.centroids[elements_index]
-        # TODO: why are we using the new cluster avgs?
-        #centroids_ = get_centroids_by_cluster(data, labels, n_clusters)
-    else:
-        raise Exception(f"[get_representatives] invalid method: {cluster_center_method}")
+    if hasattr(model, "B"):
+        R,B,C = model.R, model.B, model.C
 
-    if hasattr(model, "R"):
-        R,C = model.R,model.C
-
-    if method == 'naive_sum_tfidf':
+    print(f"[get_representatives] using {method} as method") # DBG
+    if method == 'naive_sum_tfidf': # /DEL
         reverse = not reverse # small distance ~ big sum
         dists = np.sum(data, axis=1) # rows are docs; if data is transposed, rows are words
         all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
-    elif method == 'naive_norm_tfidf':
+    elif method == 'naive_norm_tfidf': # /DEL
         squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
         
         big = max(1000, np.sum(np.abs(data)))
@@ -248,18 +236,38 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         all_distances = np.zeros((data.shape[0], n_clusters))
         for i, r in enumerate(data):
             all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
-    elif method == 'centroid_dif': # DBG
-        # TODO: test if faster difference is faster
+    elif method == 'centroid_dif':
+        # TODO: normalize doc/word centroids
+        # TODO: generalize with 2 metrics: euclidean distance and cosine similarity
+        
+        # choose cluster centers
+        if kind == 'docs':
+            elements_index = 0
+        elif kind == 'words':
+            elements_index = 1
+        if cluster_center_method == "prototype_centers" and method == "centroid_dif":
+            print("[get_representatives] using prototype centers as representatives")
+            centroids_ = model.basis_vectors[elements_index]
+        elif cluster_center_method == "cluster_avgs" and method == "centroid_dif":
+            print("[get_representatives] using (old) cluster avgs as representatives")
+            centroids_ = model.centroids[elements_index]
+            # TODO: why are we using the new cluster avgs?
+            #centroids_ = get_centroids_by_cluster(data, labels, n_clusters)
+        else:
+            raise Exception(f"[get_representatives] invalid center method: {cluster_center_method}")
+
+        # calculate distances to centroids
         all_distances = np.zeros((data.shape[0], n_clusters))
         # NOTE: words are not normalized (but documents are)
         n_data = normalize(data) if kind == 'words' else data
         big_thing = np.max(n_data)
         for i, r in enumerate(n_data):
+            # TODO: check whether this check is necessary? we shouldn't have empty documents nor words
             if not (np.sum(r) == 0):
-                all_distances[i] = [norm(r-centroid_sum) for centroid_sum in centroids_.T]
+                all_distances[i] = [norm(r-centroid) for centroid in centroids_.T]
             else:
                 all_distances[i] = 2*big_thing
-
+        # TODO: faster difference (double-check)
         """ # faster difference i think
         c_shape = centroids_.shape
         data_extra = data.reshape(*data.shape, 1).repeat(c_shape[1], axis=2) # add extra dim for clusters
@@ -278,17 +286,23 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
             total_docs_per_word = np.sum(doc_w_counts, axis=0)
             dists = total_docs_per_word
         all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
-    elif method == 'matrix_assoc':
-        reverse = not reverse # small distance ~ big assoc
+    elif method == 'matrix_assoc' or method == 'matrix_assoc_fancy':
+        reverse = not reverse # small distance == big assoc
+        adh_method = "fancy" if ("fancy" in method) else "rbc"
+        row_adh, col_adh = NBVD_coclustering.get_adherence(R, C, B, method=adh_method)
         if kind == 'docs':
-            all_distances = R
+            all_distances = row_adh
         elif kind == 'words':
-            all_distances = C.T
+            all_distances = col_adh
+    else:
+        raise Exception(f"[get_representatives] invalid method: {method}")
 
     # get representatives
     for c in range(n_clusters):
-        dists_to_centroid = sorted(zip(list(range(data.shape[0])), list(all_distances[:,c])), 
-            key = lambda t : t[1], reverse=reverse)
+        dists_to_centroid = sorted(
+            zip(range(data.shape[0]), list(all_distances[:,c])), 
+            key = lambda t : t[1], reverse=reverse
+        )
         # select top n; eliminate candidates that arent from the relevant cluster
         rep_candidates = list(__candidate_selection(dists_to_centroid, labels, c, n_representatives))
         if rep_candidates: # if anyones left
@@ -303,7 +317,8 @@ def calculate_occurrence (word, original_data, indices):
             count += 1
     return count
 
-def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, word_reps=None, verbose=True, logger=None):
+def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=40, 
+            word_reps=None, verbose=True, logger=None, rep_method="centroid_dif"):
     """Most representative documents/words are chosen based on distance to the (squashed) average of the assigned cluster.
     w_occurrence_per_d_cluster is a dict with length equal to n_word_reps*n_col_clusters and values corresponding to a dict of Bunch
     of the form 
@@ -323,12 +338,13 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
     m, k = row_centroids.shape
     n, l = col_centroids.shape
     smallest_rcluster_size = min(np.bincount(row_labels_))
-    if smallest_rcluster_size == 0:
+    if smallest_rcluster_size <= 10:
         if logger:
             logger.warn("A document cluster has size 0..")
-        else:
-            print("[WARNING] A document cluster has size 0..")
-
+        else: # TODO: better warning/logging
+            print("[cluster_summary] WARNING: A document cluster has size 0..")
+    elif smallest_rcluster_size == 0:
+        raise Exception("[cluster_summary] A cluster has size 0")
     if has_cocluster_info:
         cluster_assoc = model.cluster_assoc
         assoc_shape = cluster_assoc.shape
@@ -344,9 +360,15 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                     relevant_coclusters.append((i,j))
     
     # get row- and column-cluster representatives
-    row_cluster_representatives = get_representatives(data, model, k, n_representatives=n_doc_reps, kind='docs')
+    row_cluster_representatives = get_representatives(data, model, k, 
+                                n_representatives=n_doc_reps, kind='docs',
+                                method=rep_method
+                                )
     if word_reps is None: # calculate word representatives if they are not given
-        col_cluster_representatives = get_representatives(data.T, model, l, n_representatives=n_word_reps, kind='words')
+        col_cluster_representatives = get_representatives(data.T, model, l, 
+                                    n_representatives=n_word_reps, kind='words',
+                                    method=rep_method
+                                    )
     else:
         col_cluster_representatives = dict([(k, reps[:n_word_reps]) for k,reps in word_reps.items()])
     model.__row_reps, model.__col_reps = row_cluster_representatives, col_cluster_representatives
@@ -376,15 +398,15 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
             # cocluster analysis
             print_or_log("COCLUSTERS:")
             N = n_frequent
-            if smallest_rcluster_size < N and smallest_rcluster_size > 0:
+            if smallest_rcluster_size < N:
                 N = smallest_rcluster_size
             # TODO: do top 10% / 20% / 25% instead?
             # TODO: account for clusters smaller than N; duct tape solution is to reduce N manually
             print_or_log(f"word (occurrence in top {N} documents)(occurrence in bottom {N} documents) (occurrence in other doc clusters)")
             row_reps_topN = get_representatives(data, model, 
-                k, n_representatives=N, kind='docs')
+                k, n_representatives=N, kind='docs', method=rep_method)
             row_reps_bottomN = get_representatives(data, model, 
-                k, n_representatives=N, reverse=True, kind='docs')
+                k, n_representatives=N, reverse=True, kind='docs', method=rep_method)
             
             # for each cocluster
             w_occurrence_per_d_cluster = OrderedDict() # store occurrence and dc info for each word
@@ -406,8 +428,14 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                     else:
                         # occurrence for the dc in the cocluster
                         word = idx_to_word[w]
-                        oc_top = 100/N * calculate_occurrence(word, original_data, row_reps_topN[dc])
-                        oc_bottom = 100/N * calculate_occurrence(word, original_data, row_reps_bottomN[dc])
+                        size_topN = len(row_reps_topN[dc])
+                        size_botN = len(row_reps_bottomN[dc])
+                        # NOTE: N == smallest_rcluster_size, so row_reps sizes are guaranteed be smaller
+                        if size_topN < N or size_botN < N: # DBG
+                            print(f"###########\n[cluster_summary] Warning: doc cluster {dc} only has {size_topN} reps; expected {N}\n###########")
+                        
+                        oc_top = 100/size_topN * calculate_occurrence(word, original_data, row_reps_topN[dc])
+                        oc_bottom = 100/size_botN * calculate_occurrence(word, original_data, row_reps_bottomN[dc])
                         
                         avg_liquid_frequencies[dc] += oc_top # DBG
                         
@@ -419,7 +447,11 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                         for rclust in sorted(row_reps_topN.keys()):
                             if rclust == dc:
                                 continue
-                            oc_other = 100/N * calculate_occurrence(word, original_data, row_reps_topN[rclust])
+                            size_top_other = len(row_reps_topN[rclust])
+                            if size_top_other < N: # DBG
+                                print(f"###########\n[cluster_summary] Warning: doc cluster {rclust} only has {size_top_other} reps; expected {N}\n###########")
+
+                            oc_other = 100/size_top_other * calculate_occurrence(word, original_data, row_reps_topN[rclust])
                             avg_liquid_frequencies[rclust] -= oc_other # DBG
                             oc_others.append((rclust, oc_other))
                             w_occurrence_per_d_cluster[word][rclust] = Bunch(occ=(oc_other, ), assigned_dc=dc, assigned_wc=wc)
@@ -429,7 +461,9 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
                         to_print.append(f"{word}(T:{oc_top:.0f}%)(B:{oc_bottom:.0f}%) {oc_other_str}")
                 print_or_log(", ".join(to_print)+"\n--------------------------------------------------------\n")
             print("\navg liquid frequencies\n",avg_liquid_frequencies/80)
-    #"""# DBG
+   
+    # DBG
+    """ 
     N_REPS_COMPARE=10
     row_cluster_representatives_all, col_cluster_representatives_all = [], []
     row_cluster_representatives1 = get_representatives(data, model, k, n_representatives=N_REPS_COMPARE, method='naive_sum_tfidf', kind='docs')
@@ -445,6 +479,7 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
         col_cluster_representatives3 = get_representatives(data.T, model, l, n_representatives=N_REPS_COMPARE, method='matrix_assoc', kind='words')
         row_cluster_representatives_all.append(row_cluster_representatives3)
         col_cluster_representatives_all.append(col_cluster_representatives3)
+    """
     """
     print("docs:")
     print(*[f"{t[0]}\n{t[1]}" for t in zip(row_cluster_representatives.items(), row_cluster_representatives2.items())], sep="\n")
@@ -535,24 +570,39 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=50, w
 
     return (row_cluster_representatives, col_cluster_representatives), w_occurrence_per_d_cluster
 
-def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps):
+def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps_display_only, filename_suffix="orig_abs"):
+    total_words = len(w_occurrence_per_d_cluster.keys())
+    any_word = list(w_occurrence_per_d_cluster.keys())[0]
+    n_clusters = len(w_occurrence_per_d_cluster[any_word])
+    n_word_reps = int(total_words / n_clusters)
+    if n_word_reps != n_word_reps_display_only: # DBG
+        print(f"{total_words =} | {any_word =} | {n_clusters =} | {n_word_reps =}")
+        raise Exception(f"{n_word_reps =} but it should be {n_word_reps_display_only}")
     n_hplots, n_vplots = math.ceil(math.sqrt(n_word_reps)), round(math.sqrt(n_word_reps)) # more rows than columns
     # DBG # im pretty sure this is correct for all reasonable numbers
     if n_hplots * n_vplots < n_word_reps:
         raise Exception("cocluster_words_bar_plot: math?")
     
-    # translate w_occurrence_per_d_cluster into bar plots
+    # translate a dictionary of word occurrences per cluster into bar plots
+    # NOTE: w_occurrence_per_d_cluster is ordered; words are already grouped by cluster
     current_dc, current_ax = None, 1
+    current_wc, previous_wc = None, None
     fig = plt.figure(figsize=(2*6.4,2*4.8))
     fig.set_tight_layout(True)
     for word, info in w_occurrence_per_d_cluster.items():
         w_assigned_dc = info[0].assigned_dc # assigned_dc for w, inside info for cluster 0
         if current_dc is None: 
             current_dc = w_assigned_dc # for initial item
-            fig.suptitle(f"Word cluster {info[0].assigned_wc} (top {n_word_reps}): occurrence in doc clusters\n")
+            current_wc = info[0].assigned_wc
+            fig.suptitle(f"Word cluster {current_wc} (top {n_word_reps}): occurrence in doc clusters\n")
 
         # make a new figure for a different cluster
         if w_assigned_dc != current_dc:
+            # save previous figure
+            previous_wc = current_wc
+            current_wc = info[0].assigned_wc
+            fig.savefig(f"bar_plot_wc{previous_wc}_{filename_suffix}.png")
+            
             current_dc = w_assigned_dc
             current_ax = 1
             fig = plt.figure(figsize=(2*6.4,2*4.8))
@@ -567,6 +617,7 @@ def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps):
         color = ["#64001E" if (l != w_assigned_dc) else "#00FA8C" for l in labels]
         ax.bar(labels, values, color=color) # categorical plot
         ax.set_title(word)
+    fig.savefig(f"bar_plot_wc{current_wc}_{filename_suffix}.png") # save last figure
     plt.show()
 
 def do_vectorization (new_abstracts, vectorization_type, **kwargs):
@@ -790,11 +841,11 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
         plt.show()
 
     # textual analysis
-    representatives, w_occurrence_per_d_cluster = cluster_summary(data, model, logger=None)
+    representatives, w_occurrence_per_d_cluster = cluster_summary(data, model, 
+                                                rep_method=REP_METHOD_FOR_ORIG_ABS)
     
-
     if show_images:
-        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=20)
+        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps_display_only=20)
 
     # return general statistics
     if alg == 'nbvd':
@@ -883,9 +934,10 @@ def new_abs_cluster_summary_bar_plot (data, new_abstracts, row_col_labels, row_c
         model.col_pca = PCA(n_components=2, random_state=42).fit(normalize(np.vstack([data.T, row_col_centroids[1].T])))
         model.row_pca, model.row_c_palette, model.col_c_palette = orig_model.row_pca, orig_model.row_c_palette, orig_model.col_c_palette
 
-    _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, word_reps=orig_word_reps, logger=logger)
+    _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, 
+                                            word_reps=orig_word_reps, logger=logger)
     if bar_plot:
-        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps=n_word_reps)
+        cocluster_words_bar_plot(w_occurrence_per_d_cluster, filename_suffix="new_abs", n_word_reps_display_only=n_word_reps)
 
 def highlight_passages (new_abstracts, new_abs_classification, row_centroids, orig_vec):
     # TODO: account for non-selected clusters

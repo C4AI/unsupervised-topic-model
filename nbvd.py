@@ -84,19 +84,15 @@ class NBVD_coclustering:
             raise Exception(f"[NBVD.get_labels] ERROR: invalid labeling method: {method}")
         return np.argmin(rc_distances, axis=1)
 
-    def get_stuff (R, C, B=None, Z=None, centroids=None, method="fancy"):
-        """Get bicluster boolean matrix, row labels and column labels from row-coefficient and
-        column-coefficient matrices (R and C, respectively)."""
-
-        n, k = R.shape
-        l, m = C.shape
+    def get_adherence (R, C, B=None, Z=None, centroids=None, method="fancy"):
         if method == "rbc":
-            row = np.argmax(R, axis=1)
-            col = np.argmax(C, axis=0)
+            # TODO: possibly some normalization is required here?
+            row_adh = R
+            col_adh = C.T
         elif method == "fancy":
             # TODO: this only works if n_row_clusters == n_col_clusters, possibly because of note below
             if B is None:
-                raise Exception(f"[NBVD.get_stuff] ERROR: B is None")
+                raise Exception(f"[NBVD.get_adherence] ERROR: B is None")
 
             # NOTE: this algorithm requires sum(X) == 1, 
             #  so we will simulate that by dividing B by xsum
@@ -114,15 +110,30 @@ class NBVD_coclustering:
 
             #print(f"new U norm:\n{norm(U)}") #DBG
             #print(f"new U column sums: {np.sum(U, axis=0)}") #DBG
-            row = np.argmax(U, axis=1) # U is associated with rows; V is associated with columns
-            col = np.argmax(V, axis=1)
-        elif method == "centroids":
+            # U is associated with rows; V is associated with columns
+            row_adh = U 
+            col_adh = V
+        return (row_adh, col_adh)
+
+    # NOTE: previously get_stuff
+    def get_labels_bicluster (R, C, B=None, Z=None, centroids=None, method="fancy"):
+        """Get bicluster boolean matrix, row labels and column labels from row-coefficient and
+        column-coefficient matrices (R and C, respectively)."""
+
+        n, k = R.shape
+        l, m = C.shape
+
+        if method == "centroids":
             row_centroids, col_centroids = centroids
             m, k = row_centroids.shape
             n, l = col_centroids.shape
 
             row = NBVD_coclustering.get_labels_new_data(Z, row_centroids, k, m, n)
             col = NBVD_coclustering.get_labels_new_data(Z.T, col_centroids, l, n, m)
+        else:
+            row_adh, col_adh = NBVD_coclustering.get_adherence(R, C, B, method=method)
+            row = np.argmax(row_adh, axis=1)
+            col = np.argmax(col_adh, axis=1)
 
         zeros_row = np.zeros((n,k))
         _, j_idx = np.mgrid[slice(zeros_row.shape[0]), slice(zeros_row.shape[1])] # prefer anything over for loop
@@ -198,7 +209,7 @@ class NBVD_coclustering:
                 self.print_or_log(f"  Attempt #{attempt_no+1} norm: {current_norm}")
 
             R,B,C = results
-            _, row_labels, col_labels = NBVD_coclustering.get_stuff(R, C, B=B, Z=Z, method=DEFAULT_NBVD_LABELING_METHOD)
+            _, row_labels, col_labels = NBVD_coclustering.get_labels_bicluster(R, C, B=B, Z=Z, method=DEFAULT_NBVD_LABELING_METHOD)
             sil_row = silhouette_score(Z, row_labels)
             sil_col = silhouette_score(Z.T, col_labels)
             silhouette = MeanTuple(sil_row, sil_col)
@@ -237,7 +248,7 @@ class NBVD_coclustering:
             self.S = self.R
 
         self.basis_vectors = NBVD_coclustering.get_basis_vectors(self.R, self.B, self.C)
-        self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_stuff(
+        self.biclusters_, self.row_labels_, self.column_labels_ = NBVD_coclustering.get_labels_bicluster(
                             self.R, self.C, self.B, self.data, 
                             method=DEFAULT_NBVD_LABELING_METHOD)
         self.cluster_assoc = NBVD_coclustering.get_cluster_assoc(self.R, self.B, self.C)
