@@ -3,7 +3,7 @@
 import numpy as np
 from numpy.linalg import norm
 from numpy.random import default_rng
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, pairwise_distances_argmin
 from dataclasses import dataclass, field
 from collections import deque
 import logging
@@ -11,6 +11,7 @@ from typing import Tuple
 from my_utils import *
 
 DEFAULT_NBVD_LABELING_METHOD = "fancy"
+SILHOUETTE_METRIC = "cosine"
 
 @dataclass(eq=False)
 class NBVD_coclustering:
@@ -67,22 +68,22 @@ class NBVD_coclustering:
         col_centroids = get_centroids_by_cluster(Z.T, col_labels, n_col_clusters)
         return (row_centroids, col_centroids)
 
-    def get_labels_new_data (Z, rc_centroids, n_centroids, centroid_dim, other_centroid_dim, 
-                            R=None, C=None, method="cluster_avg_or_prototype"):
-        if method == "cluster_avg_or_prototype":
-            Z_rc_extra = Z.reshape(*Z.shape, 1).repeat(n_centroids, axis=2) # add extra dim for clusters
-            c_rc_extra = rc_centroids.T.reshape(n_centroids, centroid_dim, 1).repeat(other_centroid_dim, axis=2).T # add extra dim for number of samples
-            rc_distances = norm(Z_rc_extra-c_rc_extra, axis=1)
-            """elif method == "rbc":
-            if R is None or C is None:
-                raise Exception("[NBVD.get_labels] Please provide R and C to use the 'rbc' method")
-            row = np.argmax(R, axis=1)
-            col = np.argmax(C, axis=0)"""
-        elif method == "cosine":
-            raise NotImplementedError
-        else:
-            raise Exception(f"[NBVD.get_labels] ERROR: invalid labeling method: {method}")
-        return np.argmin(rc_distances, axis=1)
+    def get_labels_new_data (Z, centers, n_centroids, centroid_dim, other_centroid_dim, 
+                            R=None, C=None, metric="cosine"):
+        labels = pairwise_distances_argmin(Z, centers.T, metric=metric)
+        return labels
+        # if method == "cluster_avg_or_prototype":
+        #     Z_rc_extra = Z.reshape(*Z.shape, 1).repeat(n_centroids, axis=2) # add extra dim for clusters
+        #     c_rc_extra = rc_centroids.T.reshape(n_centroids, centroid_dim, 1).repeat(other_centroid_dim, axis=2).T # add extra dim for number of samples
+        #     rc_distances = norm(Z_rc_extra-c_rc_extra, axis=1)
+        #     """elif method == "rbc":
+        #     if R is None or C is None:
+        #         raise Exception("[NBVD.get_labels] Please provide R and C to use the 'rbc' method")
+        #     row = np.argmax(R, axis=1)
+        #     col = np.argmax(C, axis=0)"""
+        # elif method == "cosine":
+        #     raise NotImplementedError
+        #return np.argmin(rc_distances, axis=1)
 
     def get_adherence (R, C, B=None, Z=None, centroids=None, method="fancy"):
         if method == "rbc":
@@ -210,8 +211,8 @@ class NBVD_coclustering:
 
             R,B,C = results
             _, row_labels, col_labels = NBVD_coclustering.get_labels_bicluster(R, C, B=B, Z=Z, method=DEFAULT_NBVD_LABELING_METHOD)
-            sil_row = silhouette_score(Z, row_labels)
-            sil_col = silhouette_score(Z.T, col_labels)
+            sil_row = silhouette_score(Z, row_labels, metric=SILHOUETTE_METRIC)
+            sil_col = silhouette_score(Z.T, col_labels, metric=SILHOUETTE_METRIC)
             silhouette = MeanTuple(sil_row, sil_col)
             if verbose:
                 self.print_or_log(f"  Attempt #{attempt_no+1} silhouette:\n\trows: {sil_row:.3f}\n\tcols: {sil_col:.3f}")

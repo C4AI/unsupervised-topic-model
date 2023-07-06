@@ -203,9 +203,9 @@ def count_zero_columns (M : np.ndarray):
     return zero_cols.shape[0]
 
 #def print_silhouette_score (data, row_labels, column_labels, logger=logging.getLogger(__name__)):
-def print_silhouette_score (data, row_labels, column_labels, logger=None):
-    sil_score_row = silhouette_score(data, row_labels)
-    sil_score_col = silhouette_score(data.T, column_labels)
+def print_silhouette_score (data, row_labels, column_labels, metric="cosine", logger=None):
+    sil_score_row = silhouette_score(data, row_labels, metric=metric)
+    sil_score_col = silhouette_score(data.T, column_labels, metric=metric)
     row_labels_bin, col_labels_bin = np.bincount(row_labels), np.bincount(column_labels)
     results_message = f"\nrow label count: {row_labels_bin}\ncol label count: {col_labels_bin}\nsilhouette score:\n\trows: {sil_score_row:.3f}\n\tcols: {sil_score_col:.3f}\n"
     if logger:
@@ -296,7 +296,7 @@ def shaded_label_matrix (data, labels, kind, method_name=None, RNG=None, opacity
     ax.set_aspect(aspect_ratio)
     plt.title(f"Shaded dataset ({kind}): {method_name if method_name else ''}")
     labels, handles = list(zip(*legend_dict.items()))
-    plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
+    plt.legend(handles, labels, bbox_to_anchor=(1.01,1), loc="upper left") # 1.04,1
 
 def shade_coclusters (data, row_col_labels : Tuple[int], cluster_assoc, RNG=None, aspect_ratio=1):
     RNG = RNG or np.random.default_rng()
@@ -346,7 +346,7 @@ def shade_coclusters (data, row_col_labels : Tuple[int], cluster_assoc, RNG=None
     ax.set_aspect(aspect_ratio)
     plt.title(f"Shaded coclusters")
     labels, handles = list(zip(*legend_dict.items()))
-    plt.legend(handles, labels, bbox_to_anchor=(1.04,1), loc="upper left")
+    plt.legend(handles, labels, bbox_to_anchor=(1.01,1), loc="upper left") # 1.04,1
 
 def get_centroids_by_cluster (data, labels, n_clusters):
     n_smp, n_dim = data.shape
@@ -441,7 +441,9 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
     if basis_vectors is not None:
         handles.append(mlines.Line2D([], [], color='black', linestyle='dotted'))
         labels.append("Basis vector\ndirections")
-    legend = ax.legend(handles, labels, bbox_to_anchor=(0.99,1), loc="upper left")
+    legend = ax.legend(handles, labels, loc="upper left",
+                        bbox_to_anchor=(0.66,1) # 0.99,1
+                        )
     plt.gca().add_artist(legend) # manually add legend so we can add new legends later
     plt.title(title)
 

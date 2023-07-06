@@ -12,6 +12,7 @@ from gensim.models.doc2vec import TaggedDocument
 from sklearn.datasets import make_biclusters
 from sklearn.cluster import KMeans, SpectralClustering
 from sklearn.metrics import silhouette_score, consensus_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
+from sklearn.metrics import pairwise_distances
 from sklearn.datasets import make_blobs
 from sklearn.feature_extraction.text import *
 from sklearn.preprocessing import normalize
@@ -205,7 +206,7 @@ def __candidate_selection (dists_to_centroid, labels, cluster_no, n_representati
             return # stop yielding
 
 def get_representatives (data, model, n_clusters, n_representatives=5, reverse=False, 
-        method='centroid_dif', kind=None, 
+        method='centroid_dif', metric='cosine', kind=None, 
         cluster_center_method=DEFAULT_CLUSTER_CENTER_METHOD) -> dict:
     cluster_representatives = {}
 
@@ -252,9 +253,7 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
     #     all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
     #################### /DEL ####################
     if method == 'centroid_dif':
-        # TODO: normalize doc/word centroids
-        # TODO: generalize with 2 metrics: euclidean distance and cosine similarity
-        
+        print(f"[get_representatives] using {metric} metric") # DBG
         # choose cluster centers
         if kind == 'docs':
             elements_index = 0
@@ -271,17 +270,29 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
             raise Exception(f"[get_representatives] invalid center method: {cluster_center_method}")
 
         # calculate distances to centroids
-        all_distances = np.zeros((data.shape[0], n_clusters))
         # NOTE: words are not normalized (but documents are)
-        n_data = normalize(data) if kind == 'words' else data
+        all_distances = np.zeros((data.shape[0], n_clusters))
+        n_data = normalize(data) if kind == 'words' else data # TODO: comment out if
+        # TODO: test linear_kernel
+        all_distances = pairwise_distances(n_data, normalized_centroids, metric=metric)
+        print(f"all_distances shape: {all_distances.shape =}") # DBG
+        # we shouldn't have any distances equal to 0
+        if not np.all(all_distances):
+            print(f"######################\n[get_representatives] WARNING: all_distances contains zeroes ######################\n")
+
+        # DBG # OLD
+        """ 
         big_thing = np.max(n_data)
         for i, r in enumerate(n_data):
             # TODO: check whether this check is necessary? we shouldn't have empty documents nor words
             if not (np.sum(r) == 0):
                 all_distances[i] = [norm(r-centroid) for centroid in normalized_centroids]
             else:
+                print("############## A ############\nBIG THING\n############## A ############\n")
                 all_distances[i] = 2*big_thing
-        # TODO: faster difference (double-check)
+        """
+
+        # TODO: do not use this jsut use scikit-learn
         """ # faster difference i think
         c_shape = centroids_.shape
         data_extra = data.reshape(*data.shape, 1).repeat(c_shape[1], axis=2) # add extra dim for clusters
