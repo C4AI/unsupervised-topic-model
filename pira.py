@@ -223,20 +223,35 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         R,B,C = model.R, model.B, model.C
 
     print(f"[get_representatives] using {method} as method") # DBG
-    if method == 'naive_sum_tfidf': # /DEL
-        reverse = not reverse # small distance ~ big sum
-        dists = np.sum(data, axis=1) # rows are docs; if data is transposed, rows are words
-        all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
-    elif method == 'naive_norm_tfidf': # /DEL
-        squashed_centroids = np.sum(centroids_.T, axis=1) # squash centroids to just 1 number per cluster
-        
-        big = max(1000, np.sum(np.abs(data)))
-        squashed_centroids[:] = big
 
-        all_distances = np.zeros((data.shape[0], n_clusters))
-        for i, r in enumerate(data):
-            all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
-    elif method == 'centroid_dif':
+    #################### /DEL ####################
+    # if method == 'naive_sum_tfidf': # /DEL
+    #     reverse = not reverse # small distance ~ big sum
+    #     dists = np.sum(data, axis=1) # rows are docs; if data is transposed, rows are words
+    #     all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
+    # elif method == 'naive_norm_tfidf': # /DEL
+    #     squashed_centroids = np.sum(normalized_centroids.T, axis=1) # squash centroids to just 1 number per cluster
+        
+    #     big = max(1000, np.sum(np.abs(data)))
+    #     squashed_centroids[:] = big
+
+    #     all_distances = np.zeros((data.shape[0], n_clusters))
+    #     for i, r in enumerate(data):
+    #         all_distances[i] = [norm(r-centroid_sum) for centroid_sum in squashed_centroids]
+    # elif method == 'naive_sum_tf': # DBG
+    #     reverse = not reverse # small distance ~ big sum
+    #     cv = CountVectorizer(vocabulary=vec.vocabulary_, **vec_kwargs)
+    #     doc_w_counts = cv.fit_transform(original_data).toarray()
+        
+    #     if kind == 'docs':
+    #         total_words_per_doc = np.sum(doc_w_counts, axis=1)
+    #         dists = total_words_per_doc
+    #     elif kind == 'words':
+    #         total_docs_per_word = np.sum(doc_w_counts, axis=0)
+    #         dists = total_docs_per_word
+    #     all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
+    #################### /DEL ####################
+    if method == 'centroid_dif':
         # TODO: normalize doc/word centroids
         # TODO: generalize with 2 metrics: euclidean distance and cosine similarity
         
@@ -247,12 +262,11 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
             elements_index = 1
         if cluster_center_method == "prototype_centers" and method == "centroid_dif":
             print("[get_representatives] using prototype centers as representatives")
-            centroids_ = model.basis_vectors[elements_index]
+            normalized_centroids = normalize(model.basis_vectors[elements_index].T)
         elif cluster_center_method == "cluster_avgs" and method == "centroid_dif":
             print("[get_representatives] using (old) cluster avgs as representatives")
-            centroids_ = model.centroids[elements_index]
-            # TODO: why are we using the new cluster avgs?
-            #centroids_ = get_centroids_by_cluster(data, labels, n_clusters)
+            normalized_centroids = normalize(model.centroids[elements_index].T)
+            #centroids_ = get_centroids_by_cluster(data, labels, n_clusters) # OLD # DBG
         else:
             raise Exception(f"[get_representatives] invalid center method: {cluster_center_method}")
 
@@ -264,7 +278,7 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         for i, r in enumerate(n_data):
             # TODO: check whether this check is necessary? we shouldn't have empty documents nor words
             if not (np.sum(r) == 0):
-                all_distances[i] = [norm(r-centroid) for centroid in centroids_.T]
+                all_distances[i] = [norm(r-centroid) for centroid in normalized_centroids]
             else:
                 all_distances[i] = 2*big_thing
         # TODO: faster difference (double-check)
@@ -274,18 +288,6 @@ def get_representatives (data, model, n_clusters, n_representatives=5, reverse=F
         c_extra = centroids_.T.reshape(c_shape[1], c_shape[0], 1).repeat(data.shape[0], axis=2).T # add extra dim for number of samples
         all_distances = norm(data_extra-c_extra, axis=1)
         """
-    elif method == 'naive_sum_tf': # DBG
-        reverse = not reverse # small distance ~ big sum
-        cv = CountVectorizer(vocabulary=vec.vocabulary_, **vec_kwargs)
-        doc_w_counts = cv.fit_transform(original_data).toarray()
-        
-        if kind == 'docs':
-            total_words_per_doc = np.sum(doc_w_counts, axis=1)
-            dists = total_words_per_doc
-        elif kind == 'words':
-            total_docs_per_word = np.sum(doc_w_counts, axis=0)
-            dists = total_docs_per_word
-        all_distances = dists.repeat(n_clusters).reshape((dists.shape[0], n_clusters))
     elif method == 'matrix_assoc' or method == 'matrix_assoc_fancy':
         reverse = not reverse # small distance == big assoc
         adh_method = "fancy" if ("fancy" in method) else "rbc"
