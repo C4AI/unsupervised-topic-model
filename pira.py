@@ -42,7 +42,7 @@ stop_words_nltk.extend(['also','semi','multi','sub','non','et','al','like','pre'
 
 ])
   
-# TODO: double-check nohing breaks and:
+# TODO: double-check nothing breaks and:
 # add: 'os','nature','algorithm','poorly','strongly','universidade','years','yr','showed', 
 # possibly some meaning: bpd,bbl (barrel per day -> petroleum), Cu (copper), Ca (calcium), rights (to drilling)
 # TODO: regex for copyright
@@ -330,7 +330,7 @@ def calculate_occurrence (word, original_data, indices):
             count += 1
     return count
 
-def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=40, 
+def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=40,
             word_reps=None, verbose=True, logger=None, rep_method="centroid_dif"):
     """Most representative documents/words are chosen based on distance to the (squashed) average of the assigned cluster.
     w_occurrence_per_d_cluster is a dict with length equal to n_word_reps*n_col_clusters and values corresponding to a dict of Bunch
@@ -583,24 +583,34 @@ def cluster_summary (data, model, n_doc_reps=5, n_word_reps=20, n_frequent=40,
 
     return (row_cluster_representatives, col_cluster_representatives), w_occurrence_per_d_cluster
 
-def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps_display_only, filename_suffix="orig_abs"):
+def cocluster_words_bar_plot (w_occurrence_per_d_cluster, filename_suffix=""):
     total_words = len(w_occurrence_per_d_cluster.keys())
     any_word = list(w_occurrence_per_d_cluster.keys())[0]
     n_clusters = len(w_occurrence_per_d_cluster[any_word])
     n_word_reps = int(total_words / n_clusters)
+    print(f"[cocluster_words_bar_plot] {n_word_reps =}") # DBG
+
+    """ 
     if n_word_reps != n_word_reps_display_only: # DBG
         print(f"{total_words =} | {any_word =} | {n_clusters =} | {n_word_reps =}")
         raise Exception(f"{n_word_reps =} but it should be {n_word_reps_display_only}")
+    """
+
     n_hplots, n_vplots = math.ceil(math.sqrt(n_word_reps)), round(math.sqrt(n_word_reps)) # more rows than columns
     # DBG # im pretty sure this is correct for all reasonable numbers
     if n_hplots * n_vplots < n_word_reps:
         raise Exception("cocluster_words_bar_plot: math?")
     
+    custom_figsize = (2*6.4,2*4.8)
+    #n_hplots = 4 # DBG
+    #n_vplots = 6 # DBG
+    # custom_figsize = (17,7.437) # DBG
+
     # translate a dictionary of word occurrences per cluster into bar plots
     # NOTE: w_occurrence_per_d_cluster is ordered; words are already grouped by cluster
     current_dc, current_ax = None, 1
     current_wc, previous_wc = None, None
-    fig = plt.figure(figsize=(2*6.4,2*4.8))
+    fig = plt.figure(figsize=custom_figsize) 
     fig.set_tight_layout(True)
     for word, info in w_occurrence_per_d_cluster.items():
         w_assigned_dc = info[0].assigned_dc # assigned_dc for w, inside info for cluster 0
@@ -618,7 +628,7 @@ def cocluster_words_bar_plot (w_occurrence_per_d_cluster, n_word_reps_display_on
             
             current_dc = w_assigned_dc
             current_ax = 1
-            fig = plt.figure(figsize=(2*6.4,2*4.8))
+            fig = plt.figure(figsize=custom_figsize)
             fig.suptitle(f"Word cluster {info[0].assigned_wc} (top {n_word_reps}): occurrence in doc clusters\n")
             fig.set_tight_layout(True)
         
@@ -773,6 +783,8 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
     # add extra info to model
     model.__original_data, model.__vectorization = original_data, vectorization
 
+    print(f"B =\n{model.B}") # DBG 
+
     #/DEL
     """ # clumps most docs into 1 cluster #/DEL
     elif alg == 'kmeans':
@@ -858,7 +870,7 @@ def do_task_single (data, original_data, vectorization, only_one=True, alg=ALG,
                                                 rep_method=REP_METHOD_FOR_ORIG_ABS)
     
     if show_images:
-        cocluster_words_bar_plot(w_occurrence_per_d_cluster, n_word_reps_display_only=20)
+        cocluster_words_bar_plot(w_occurrence_per_d_cluster, filename_suffix="orig_abs")
 
     # return general statistics
     if alg == 'nbvd':
@@ -932,7 +944,7 @@ def new_abs_reduced_centroids_plot (Z, new_labels, orig_model, RNG=None):
     ax.legend(handles, labels, bbox_to_anchor=(0.99,0.1), loc="lower left")
     plt.show()
 
-def new_abs_cluster_summary_bar_plot (data, new_abstracts, row_col_labels, row_col_centroids, orig_model, bar_plot=True, n_word_reps=20, orig_word_reps=None, logger=None):
+def new_abs_cluster_summary_bar_plot (data, new_abstracts, row_col_labels, row_col_centroids, orig_model, bar_plot=True, orig_word_reps=None, logger=None):
     model = FooClass()
     model.__original_data = new_abstracts
     model.row_labels_, model.column_labels_ = row_col_labels
@@ -947,10 +959,10 @@ def new_abs_cluster_summary_bar_plot (data, new_abstracts, row_col_labels, row_c
         model.col_pca = PCA(n_components=2, random_state=42).fit(normalize(np.vstack([data.T, row_col_centroids[1].T])))
         model.row_pca, model.row_c_palette, model.col_c_palette = orig_model.row_pca, orig_model.row_c_palette, orig_model.col_c_palette
 
-    _, w_occurrence_per_d_cluster = cluster_summary(data, model, n_word_reps=n_word_reps, 
+    _, w_occurrence_per_d_cluster = cluster_summary(data, model, 
                                             word_reps=orig_word_reps, logger=logger)
     if bar_plot:
-        cocluster_words_bar_plot(w_occurrence_per_d_cluster, filename_suffix="new_abs", n_word_reps_display_only=n_word_reps)
+        cocluster_words_bar_plot(w_occurrence_per_d_cluster, filename_suffix="new_abs")
 
 def highlight_passages (new_abstracts, new_abs_classification, row_centroids, orig_vec):
     # TODO: account for non-selected clusters
