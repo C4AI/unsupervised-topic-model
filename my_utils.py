@@ -21,14 +21,11 @@ from pprint import pprint
 import sys,os,time
 import logging
 from datetime import datetime
-from numba import jit, njit
 from pyqtgraph.Qt import QtCore, QtGui
 #import pyqtgraph.opengl as gl
 import pyqtgraph as pg
 from collections import deque, OrderedDict
 import pandas as pd
-
-from generateSyntheticData_mod import generateSyntheticData
 
 ############################################################################## 
 # to use a set number of cpus: 
@@ -48,46 +45,6 @@ class MeanTuple:
     def __str__(self):
         template = ", ".join(["{:.3f}" for _ in self.numbers])
         return "(" + template.format(*self.numbers) + ")"
-
-def make_synthetic_datasets (mat_shape, noise_prob : float, sparsity : Union[int, list], 
-    synthetic_folder, seed=None, rerun_generate=False, print_info=False) -> OrderedDict :
-    """Write datasets to disk (if necessary); optionally print info about datasets 
-    
-    Returns the loaded datasets.
-    """
-    RNG = np.random.default_rng(seed)
-
-    def load_dataset (data_dir, filename):
-        path = os.path.join(data_dir, filename)
-        return np.loadtxt(path, delimiter=';')
-
-    datasets = OrderedDict()
-    sparsity = sparsity if type(sparsity) == list else [sparsity]
-    for sp in sparsity:
-        # write datasets to disk (if necessary)
-        synthetic_folder_shape_sparsity = os.path.join(synthetic_folder, f"{mat_shape[0]}-{mat_shape[1]}-{sp}")
-        os.makedirs(synthetic_folder_shape_sparsity, exist_ok=True)
-        if rerun_generate or not os.listdir(synthetic_folder_shape_sparsity):
-            print("Generating synthetic datasets ...")
-            # empty folder if not already empty
-            for f in os.listdir(synthetic_folder_shape_sparsity):
-                os.remove(os.path.join(synthetic_folder_shape_sparsity, f))
-            generateSyntheticData(*mat_shape, sp, directory=synthetic_folder_shape_sparsity, seed=seed)
-
-        # load datasets from disk
-        synthetic_data_names = os.listdir(synthetic_folder_shape_sparsity)
-        for i,filename in enumerate(sorted(synthetic_data_names)):
-            dataset = load_dataset(synthetic_folder_shape_sparsity, filename)
-            task_name = filename.replace(".txt", "")
-            if dataset.ndim == 2 and task_name not in datasets: # only matrices
-                dataset = noisify(dataset, probability=noise_prob, RNG=RNG)
-                datasets[task_name] = dataset
-
-    # print info about synthetic tasks
-    if print_info:       
-        print("Datasets available:")
-        print(*[name for name in datasets], sep="\n", end="\n\n")
-    return datasets
 
 def start_default_rng (seed=None, logger=None):
     """ Start the default RNG with a (user-provided / randomly-generated) seed 
@@ -144,18 +101,6 @@ def dump_globals (globals_dict, logger=None):
     for k, v in globals_dict.items():
         if k not in banned_keys and type(v) in cool_types:
             log_or_print(f"{k:^15}:\t\t{v}")
-
-def noisify (sparse_matrix, probability, RNG=None):
-    """Noisifies matrix in-place and returns it."""
-    RNG = RNG or np.random.default_rng()
-    flat_length = sparse_matrix.shape[0] * sparse_matrix.shape[1]
-    min_val, max_val = sparse_matrix.min(), sparse_matrix.max()
-
-    np.place(sparse_matrix, 
-        sparse_matrix == 0, 
-        (RNG.random(size=(flat_length,)) < probability) * RNG.uniform(min_val, max_val, size=(flat_length,))
-    )
-    return sparse_matrix
 
 def get_difs (a, window):
     
@@ -219,28 +164,6 @@ def bic_boolean_to_labels (bic):
     labelize = lambda a: np.argmax(a, axis=0)
     row_labels, col_labels = labelize(rows), labelize(cols)
     return row_labels, col_labels
-
-# TODO: decide: DELETE?
-def random_block_matrix (shape, n_row_clusters, n_col_clusters, seed=None):
-    """more like 'some blocky gradient thing'"""
-
-    rng = np.random.default_rng(seed=seed)
-    k, l = n_row_clusters, n_col_clusters
-    #block_map = rng.integers(size=(k,l), low=0, high=k*l//4+1)
-    block_map = 2*np.reshape(np.arange(k*l), (k,l))
-    
-    block_list=[]
-    elem_shape = (shape[0]//k, shape[1]//l)
-    for i in range(k):
-        block_line = []
-        for j in range(l):
-            elem = block_map[i,j] * np.ones(elem_shape)
-            block_line.append(elem)
-        block_list.append(block_line)
-    block_matrix = np.block(block_list)
-    #block_matrix = np.reshape(block_matrix, shape) # doesnt fix the finnickiness
-
-    return block_matrix
 
 def plot_matrices(matrices : Iterable, names : Iterable, 
                     timer=None, savefig : str = None, aspect_ratio=1):
@@ -364,7 +287,6 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
     """
     Dimension-reduced plot of cluster members and centroids, coloring points according to labels.
     """
-    # TODO: get better colors
     RNG = RNG or np.random.default_rng()
     _ = RNG.random() # re-roll RNG # DBG
     _, n = centroids.shape
@@ -385,8 +307,6 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
         pca = PCA(n_components=2, random_state=42)
         pca.fit(normalized_members) # don't fit on the centroids
     reduced_points = pca.transform(points)
-    #print("members, features:", pca_row.n_members_, pca_row.n_features_) # /DEL
-    #print("reduced_points:", reduced_points.shape) # /DEL
     palette = (palette 
                 if palette is not None
                 else RNG.choice(list(color_registry.values()), size=n, replace=False)
@@ -414,7 +334,6 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
     # calculate reduced-dimension basis vectors
     if basis_vectors is not None:
         basis_points_reduced = pca.transform(basis_vectors.T)
-        #print("basis points reduced:\n",basis_points_reduced) #DBG
         
         # logic for ensuring view doesn't change and basis vector lines don't end midscreen
         ax.autoscale_view() # force autoscale of the axis view now
@@ -423,13 +342,11 @@ def centroid_scatter_plot (members, centroids, labels, basis_vectors=None,
         biggest_visible_line_length = (x_lim[1] - x_lim[0])**2 + (y_lim[1] - y_lim[0])**2
         smallest_magn = np.min(norm(basis_points_reduced, axis=1))
         scale_factor = biggest_visible_line_length / smallest_magn
-        #print(f"[myutils.centroid_scatter] scale factor is: {scale_factor}") #DBG
 
         # plot basis vector lines
         for i in range(n):
             direction_vector = basis_points_reduced[i,:]
             direction_points = np.vstack([[0,0], direction_vector, scale_factor*direction_vector])
-            #print(f"basis direction line {i}:\n{direction_points}") #DBG
             ax.plot(
                 direction_points[:, 0], direction_points[:, 1], 
                 color=palette[i], alpha=0.8, linestyle="dotted", marker="" # empty marker to hide points
@@ -459,11 +376,6 @@ def plot_norm_history (model):
     acc = get_difs(vel, 5)
 
     acc = np.array(acc)
-    # TODO: test if ok
-    # TODO: i think it was a bit weird?
-    #args = np.arange(len(acc))[acc > acc.mean()]
-    #fig.vlines(args, ymin=min(y)-2*abs(min(y)), ymax=max(y)+abs(max(y)), color="black", alpha=0.2)
-    #print(args)
     for i,val in enumerate(acc):
         if val > sum(acc)/len(acc):
             ax.axvline(i, color="black", alpha=0.1)
@@ -523,23 +435,6 @@ def init_qt_graphics(data_matrix):
     win.addItem(p2)
     
     return app, win, im2, anchor2
-
-def qt_plot_matrix (data, win):
-    # FIXME: DELETE dis
-    # create a new subplot and plot a thing
-    p = pg.PlotItem()
-    im = pg.ImageItem(data)
-    p.setWindowTitle('pyqtgraph!!')
-    p.invertY(True)
-    """ # looks bad
-    grad = pg.GradientEditorItem()
-    #available LUTs: ‘thermal’, ‘flame’, ‘yellowy’, ‘bipolar’, ‘spectrum’, ‘cyclic’, ‘greyclip’, ‘grey’, ‘viridis’, ‘inferno’, ‘plasma’, ‘magma’
-    grad.loadPreset('flame')
-    im.setLookupTable(grad.getLookupTable(512))
-    """
-
-    p.addItem(im)
-    win.addItem(p)
     
 def update_display(history : deque, display, anchor):
     if anchor.timer:

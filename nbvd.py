@@ -72,18 +72,6 @@ class NBVD_coclustering:
                             R=None, C=None, metric="cosine"):
         labels = pairwise_distances_argmin(Z, centers.T, metric=metric)
         return labels
-        # if method == "cluster_avg_or_prototype":
-        #     Z_rc_extra = Z.reshape(*Z.shape, 1).repeat(n_centroids, axis=2) # add extra dim for clusters
-        #     c_rc_extra = rc_centroids.T.reshape(n_centroids, centroid_dim, 1).repeat(other_centroid_dim, axis=2).T # add extra dim for number of samples
-        #     rc_distances = norm(Z_rc_extra-c_rc_extra, axis=1)
-        #     """elif method == "rbc":
-        #     if R is None or C is None:
-        #         raise Exception("[NBVD.get_labels] Please provide R and C to use the 'rbc' method")
-        #     row = np.argmax(R, axis=1)
-        #     col = np.argmax(C, axis=0)"""
-        # elif method == "cosine":
-        #     raise NotImplementedError
-        #return np.argmin(rc_distances, axis=1)
 
     def get_adherence (R, C, B=None, Z=None, centroids=None, method="fancy"):
         if method == "rbc":
@@ -91,7 +79,7 @@ class NBVD_coclustering:
             row_adh = R
             col_adh = C.T
         elif method == "fancy":
-            # TODO: this only works if n_row_clusters == n_col_clusters, possibly because of note below
+            # TODO: this only works if n_row_clusters == n_col_clusters, possibly because of TODO below
             if B is None:
                 raise Exception(f"[NBVD.get_adherence] ERROR: B is None")
 
@@ -109,14 +97,11 @@ class NBVD_coclustering:
             U = U @ diag(S @ Dv @ np.ones(Dv.shape)) 
             V = V @ diag(np.ones(Du.shape).T @ Du @ S)
 
-            #print(f"new U norm:\n{norm(U)}") #DBG
-            #print(f"new U column sums: {np.sum(U, axis=0)}") #DBG
             # U is associated with rows; V is associated with columns
             row_adh = U 
             col_adh = V
         return (row_adh, col_adh)
 
-    # NOTE: previously get_stuff
     def get_labels_bicluster (R, C, B=None, Z=None, centroids=None, method="fancy"):
         """Get bicluster boolean matrix, row labels and column labels from row-coefficient and
         column-coefficient matrices (R and C, respectively)."""
