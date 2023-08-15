@@ -47,7 +47,6 @@ class NBVD_coclustering:
             self.logger.info(s)
         else:
             print(s)
-
     def get_basis_vectors (R,B,C):
         # R = (n,k)
         # B = (k,l)
@@ -223,7 +222,7 @@ class NBVD_coclustering:
         self.data = np.array(self.data)
         Z = self.data
         self.Z = self.data # in case we prefer to call it this way
-
+        
         # clustering # /DEL
         if self.symmetric: # /DEL
             n,m = Z.shape

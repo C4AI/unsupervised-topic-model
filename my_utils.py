@@ -12,7 +12,7 @@ from sklearn.cluster import SpectralCoclustering, KMeans
 from sklearn.decomposition import *
 from sklearn.preprocessing import *
 from sklearn.feature_extraction.text import *
-from sklearn.metrics import consensus_score, silhouette_score, accuracy_score, adjusted_rand_score, v_measure_score, adjusted_mutual_info_score
+from sklearn.metrics import silhouette_score
 from sklearn.utils import Bunch
 from dataclasses import dataclass, field
 from typing import Tuple, Iterable, Union
@@ -31,6 +31,7 @@ import pandas as pd
 # to use a set number of cpus: 
 #   taskset --cpu-list 0-7 python "synthetic_suite.py"
 ##############################################################################
+
 
 @dataclass(order=True)
 class MeanTuple:
@@ -120,7 +121,6 @@ def get_difs (a, window):
         new[i] = new[window//2]
         new[n-i-1] = new[n-window//2]
     return new
-        
 
 def cool_header_thing ():
     print_rng = default_rng()
@@ -128,19 +128,6 @@ def cool_header_thing ():
     n2 = print_rng.integers(low=14, high=21)
     s = "".join(print_rng.permutation(list(n1* "#" + n2* "@")))
     return s
-
-def mat_debug (M: np.ndarray, name=None, entries=None, logger=None):
-    name = name if name else "matrix"
-    s = cool_header_thing()
-    header =  f"\n\n{s}  {name}  {s}\n"
-    if logger:
-        logger.info(header)
-        logger.info(f"dtype, shape, min, max, norm: {M.dtype} | {M.shape}\n{np.abs(M).min()} | {np.abs(M).max()} | {np.linalg.norm(M)}")
-    else:
-        print(header)
-        print(f"dtype, shape, min, max, norm: {M.dtype} | {M.shape}\n{np.abs(M).min()} | {np.abs(M).max()} | {np.linalg.norm(M)}")
-    if entries is True or (M.shape[0] * M.shape[1] < 2000 and entries is None):
-        pprint(M)
 
 def count_zero_columns (M : np.ndarray):
     M_col_sum = np.sum(M, axis=0)
